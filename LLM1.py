@@ -27,7 +27,7 @@ def run_extraction(molecule_input, schema, client, retries=3, wait=10):
     for attempt in range(1, retries + 1):
         try:
             result = client.chat_completion(
-                model="microsoft/Phi-3.5-mini-instruct",
+                model="meta-llama/Llama-3.1-8B-Instruct",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content}

@@ -1,5 +1,6 @@
 import json
 import os
+import requests
 from huggingface_hub import InferenceClient
 from dotenv import load_dotenv
 
@@ -16,8 +17,41 @@ if not HF_TOKEN:
 
 client = InferenceClient(token=HF_TOKEN)
 
+# ── PubChem CID lookup ────────────────────────────────────────────────────────
+def fetch_cid(molecule_input: str) -> int:
+    """Resolve molecule name or SMILES to a PubChem CID. Returns 0 if not found."""
+    try:
+        # Try by name first
+        url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{requests.utils.quote(molecule_input)}/cids/JSON"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            return r.json()["IdentifierList"]["CID"][0]
+
+        # Fallback: try as SMILES
+        url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/{requests.utils.quote(molecule_input)}/cids/JSON"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            return r.json()["IdentifierList"]["CID"][0]
+
+    except Exception as e:
+        print(f"[CID] Lookup failed: {e}")
+
+    return 0
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 def run_pipeline(molecule_input: str) -> dict:
+
+    # CID resolution — skip lookup if input is already a numeric CID
+    if molecule_input.isdigit():
+        cid = int(molecule_input)
+        print(f"[CID] Using provided CID: {cid}")
+    else:
+        print(f"[CID] Looking up PubChem CID for: {molecule_input}")
+        cid = fetch_cid(molecule_input)
+        if cid:
+            print(f"[CID] Found: {cid}")
+        else:
+            print("[CID] Not found, defaulting to 0.")
 
     # STEP 1: Extraction
     print(f"\n[LLM1] Extracting properties for: {molecule_input}")
@@ -47,6 +81,9 @@ def run_pipeline(molecule_input: str) -> dict:
             final_output = json.loads(raw_output)
         except json.JSONDecodeError as e:
             raise RuntimeError(f"LLM2 returned invalid JSON: {e}\nRaw output:\n{raw_output}")
+
+    # Inject real CID (overrides whatever LLM2 put)
+    final_output["cid"] = cid
 
     print("[LLM2] Done.")
     return final_output

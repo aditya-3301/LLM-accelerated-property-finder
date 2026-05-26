@@ -22,7 +22,7 @@ def run_verification(fused_data, schema, client, retries=3, wait=10):
     for attempt in range(1, retries + 1):
         try:
             result = client.chat_completion(
-                model="mistralai/Mistral-7B-Instruct-v0.3",
+                model="meta-llama/Llama-3.1-8B-Instruct",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content}
