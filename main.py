@@ -10,7 +10,7 @@ import LLM2
 import fusion
 from schema import REQUIRED_SCHEMA
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# Load environment variables and authenticate with Hugging Face.
 load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
 if not HF_TOKEN:
@@ -20,8 +20,10 @@ client = InferenceClient(token=HF_TOKEN)
 
 def _get_numeric_paths(schema: dict, path: tuple = ()) -> list:
     """
-    Walk schema and return all paths to numeric leaf nodes (int or float).
-    Excludes 'cid' which is handled separately.
+    Recursively walks the schema and collects the full path to every numeric
+    leaf (int or float). These paths are used later to protect fused values
+    from being overwritten by LLM2. 'cid' is excluded because it is injected
+    directly and never passes through the fusion engine.
     e.g. → [("molecule", "logP"), ("interaction_profile", "activity_value"), ...]
     """
     paths = []
@@ -35,9 +37,12 @@ def _get_numeric_paths(schema: dict, path: tuple = ()) -> list:
     return paths
 
 
-# ── PubChem CID lookup ────────────────────────────────────────────────────────
+# Resolve a molecule name or SMILES string to a PubChem CID.
 def fetch_cid(molecule_input: str) -> int:
-    """Resolve molecule name or SMILES to a PubChem CID. Returns 0 if not found."""
+    """
+    Tries a name-based lookup first, then falls back to SMILES if the name
+    query returns nothing. Returns 0 if both attempts fail.
+    """
     try:
         url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{requests.utils.quote(molecule_input)}/cids/JSON"
         r = requests.get(url, timeout=10)
@@ -54,55 +59,56 @@ def fetch_cid(molecule_input: str) -> int:
 
     return 0
 
-# ── Pipeline ──────────────────────────────────────────────────────────────────
+# Main pipeline: takes a molecule identifier and returns a validated JSON record.
 def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
 
-    # CID resolution
+    # CID resolution — accept a raw integer CID or resolve from name/SMILES.
     if molecule_input.isdigit():
         cid = int(molecule_input)
         print(f"[CID] Using provided CID: {cid}")
     else:
-        print(f"[CID] Looking up PubChem CID for: {molecule_input}")
+        print(f"[CID] Resolving PubChem CID for: {molecule_input}")
         cid = fetch_cid(molecule_input)
         if cid:
-            print(f"[CID] Found: {cid}")
+            print(f"[CID] Resolved to CID {cid}")
         else:
-            print("[CID] Not found, defaulting to 0.")
+            print("[CID] Could not resolve a CID — defaulting to 0.")
 
-    # STEP 1: Extraction
+    # Step 1 — LLM1 extracts raw multi-candidate property values from literature.
     print(f"\n[LLM1] Extracting properties for: {molecule_input}")
     try:
         extracted = LLM1.run_extraction(molecule_input, REQUIRED_SCHEMA, client)
     except Exception as e:
         raise RuntimeError(f"LLM1 extraction failed: {e}")
-    print("[LLM1] Done.")
+    print("[LLM1] Extraction complete.")
 
     if debug:
-        print("\n── LLM1 RAW EXTRACTION ──────────────────────────────────────────────────")
+        print("\n[DEBUG] LLM1 raw extraction:")
         print(json.dumps(extracted, indent=2))
 
-    # Normalize: LLM1 sometimes wraps output under a CID key instead of flat schema
-    # e.g. {"5754": {"molecule": ...}} → {"molecule": ...}
+    # LLM1 sometimes nests its output under a CID key rather than returning a
+    # flat schema-shaped dict. For example: {"5754": {"molecule": ...}} instead
+    # of {"molecule": ...}. Detect this by checking whether any top-level key
+    # matches the schema, and unwrap if exactly one wrapper key is present.
     schema_keys = set(REQUIRED_SCHEMA.keys()) - {"cid"}
     if not schema_keys.intersection(extracted.keys()):
-        # No schema keys at top level — check if there's exactly one wrapper key
         wrapper_keys = [k for k in extracted if isinstance(extracted[k], dict)]
         if len(wrapper_keys) == 1:
-            print(f"[NORM] LLM1 wrapped output under key '{wrapper_keys[0]}' — unwrapping")
+            print(f"[NORM] Output was wrapped under key '{wrapper_keys[0]}' — unwrapping.")
             extracted = extracted[wrapper_keys[0]]
 
-    # STEP 2: Fusion
-    print("\n[FUSION] Running outlier removal + confidence-weighted mean...")
+    # Step 2 — Fusion collapses the noisy candidate arrays into single values.
+    print("\n[FUSION] Removing outliers and computing confidence-weighted values...")
     fused = fusion.fuse(extracted)
 
     if debug:
-        print("\n── FUSED INTERMEDIATE ───────────────────────────────────────────────────")
+        print("\n[DEBUG] Fused intermediate:")
         print(json.dumps(fused, indent=2))
 
-    print("[FUSION] Done.")
+    print("[FUSION] Fusion complete.")
 
-    # STEP 3: Verification + Final JSON build
-    print("[LLM2] Verifying and building final record...")
+    # Step 3 — LLM2 checks biological plausibility and builds the final record.
+    print("[LLM2] Verifying plausibility and assembling final record...")
     try:
         raw_output = LLM2.run_verification(fused, REQUIRED_SCHEMA, client)
     except Exception as e:
@@ -113,10 +119,13 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
         raise RuntimeError(f"LLM2 returned unexpected type {type(raw_output)}: {raw_output}")
     final_output = raw_output
 
-    # Derive protected numeric paths directly from schema — updates automatically when schema changes
+    # Discover every numeric field path from the schema at runtime, so this
+    # guard automatically covers any new fields added to schema.py in future.
     numeric_paths = _get_numeric_paths(REQUIRED_SCHEMA)
 
-    # Guard: re-inject numeric values from fused data — LLM2 must not alter these
+    # Re-inject fused numeric values into the final output. LLM2 is instructed
+    # not to change these, but instruction-following is not guaranteed — this
+    # acts as a hard enforcement layer rather than a trust-but-verify check.
     for *path, leaf in numeric_paths:
         try:
             src = fused
@@ -124,7 +133,7 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
                 src = src[key]
             fused_val = src[leaf]
         except (KeyError, TypeError):
-            continue  # field not in fused at all; nothing to protect
+            continue  # this field was not present in the fused data at all
 
         if fused_val is None:
             continue
@@ -132,19 +141,22 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
         try:
             dst = final_output
             for key in path:
-                dst = dst[key]  # don't create — if LLM2 dropped the section, warn below
+                dst = dst[key]  # intentionally don't create missing sections
             existing = dst.get(leaf)
             if not (isinstance(existing, float) and isinstance(fused_val, float)
                     and math.isclose(existing, fused_val, rel_tol=1e-9)):
                 if existing != fused_val:
-                    print(f"[GUARD] LLM2 altered {'.'.join(path + [leaf])}: "
-                          f"{existing} → restoring {fused_val}")
+                    print(f"[GUARD] LLM2 changed {'.'.join(path + [leaf])} "
+                          f"from {existing} to {fused_val} — restoring fused value.")
             dst[leaf] = fused_val
         except (KeyError, TypeError):
-            print(f"[WARN] Could not restore {'.'.join(path + [leaf])}: path missing in LLM2 output")
+            print(f"[WARN] Could not restore {'.'.join(path + [leaf])}: "
+                  f"the path is missing from LLM2's output.")
 
-    # Null sentinel: where fusion returned None, override LLM2's schema-default zero
-    # so the final output honestly signals "unresolvable" rather than a fake 0.0
+    # Where fusion returned None (no plausible value could be resolved), make
+    # sure the final output also carries None rather than the schema default of
+    # 0.0 that LLM2 may have filled in. A null in the output is an honest
+    # signal; a silent zero would be misleading.
     for *path, leaf in numeric_paths:
         try:
             src = fused
@@ -155,27 +167,28 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
                 for key in path:
                     dst = dst[key]
                 dst[leaf] = None
-                print(f"[INFO] {'.'.join(path + [leaf])} was unresolvable — set to null in output")
+                print(f"[INFO] {'.'.join(path + [leaf])} could not be resolved — marked as null.")
         except (KeyError, TypeError):
-            pass  # path missing entirely; nothing to nullify
+            pass  # path is missing entirely; nothing to nullify
 
-    # Validate output keys match schema (top-level and one level deep)
+    # Audit the final output against the schema to catch any keys that LLM2
+    # may have silently dropped, checking both top-level and one level deep.
     def _validate_keys(output: dict, schema: dict, path: str = ""):
         for key in schema:
             if key == "cid":
-                continue  # injected separately
+                continue  # cid is injected separately below, not from LLM2
             if key not in output:
-                print(f"[WARN] Missing key in final output: {path}{key}")
+                print(f"[WARN] Expected field missing from output: {path}{key}")
             elif isinstance(schema[key], dict) and isinstance(output.get(key), dict):
                 _validate_keys(output[key], schema[key], path=f"{path}{key}.")
     _validate_keys(final_output, REQUIRED_SCHEMA)
     
     final_output["cid"] = cid
-    print("[LLM2] Done.")
+    print("[LLM2] Verification complete.")
     return final_output
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# Entry point
 if __name__ == "__main__":
     molecule = input("Enter molecule name / SMILES / CID: ").strip()
     debug_input = input("Debug mode? Show LLM1 extraction + fused intermediate? (y/n): ").strip().lower()
@@ -183,7 +196,7 @@ if __name__ == "__main__":
 
     result = run_pipeline(molecule, debug=debug)
 
-    print("\n── FINAL OUTPUT ─────────────────────────────────────────────────────────")
+    print("\n[OUTPUT]")
     print(json.dumps(result, indent=2))
 
     def _round_floats(obj, decimals=4):
@@ -196,4 +209,4 @@ if __name__ == "__main__":
     output_file = "output.json"
     with open(output_file, "w") as f:
         json.dump(_round_floats(result), f, indent=2)
-    print(f"\nSaved to {output_file}")
+    print(f"\nRecord saved to {output_file}")
