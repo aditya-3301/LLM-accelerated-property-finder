@@ -1,12 +1,12 @@
 {
-  "cid": 0,
+  "cid": 5754,
   "molecule": {
-    "molecular_weight": 180.2,
-    "logP": 3.9162
+    "molecular_weight": 312.37,
+    "logP": 1.34
   },
   "interaction_profile": {
     "activity_type": "IC50",
-    "activity_value": 31.4,
+    "activity_value": 73.3778,
     "activity_unit": "nM"
   }
 }

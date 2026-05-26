@@ -18,6 +18,23 @@ if not HF_TOKEN:
 
 client = InferenceClient(token=HF_TOKEN)
 
+def _get_numeric_paths(schema: dict, path: tuple = ()) -> list:
+    """
+    Walk schema and return all paths to numeric leaf nodes (int or float).
+    Excludes 'cid' which is handled separately.
+    e.g. → [("molecule", "logP"), ("interaction_profile", "activity_value"), ...]
+    """
+    paths = []
+    for key, val in schema.items():
+        if key == "cid":
+            continue
+        if isinstance(val, dict):
+            paths.extend(_get_numeric_paths(val, path + (key,)))
+        elif isinstance(val, (int, float)):
+            paths.append(path + (key,))
+    return paths
+
+
 # ── PubChem CID lookup ────────────────────────────────────────────────────────
 def fetch_cid(molecule_input: str) -> int:
     """Resolve molecule name or SMILES to a PubChem CID. Returns 0 if not found."""
@@ -64,6 +81,16 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
         print("\n── LLM1 RAW EXTRACTION ──────────────────────────────────────────────────")
         print(json.dumps(extracted, indent=2))
 
+    # Normalize: LLM1 sometimes wraps output under a CID key instead of flat schema
+    # e.g. {"5754": {"molecule": ...}} → {"molecule": ...}
+    schema_keys = set(REQUIRED_SCHEMA.keys()) - {"cid"}
+    if not schema_keys.intersection(extracted.keys()):
+        # No schema keys at top level — check if there's exactly one wrapper key
+        wrapper_keys = [k for k in extracted if isinstance(extracted[k], dict)]
+        if len(wrapper_keys) == 1:
+            print(f"[NORM] LLM1 wrapped output under key '{wrapper_keys[0]}' — unwrapping")
+            extracted = extracted[wrapper_keys[0]]
+
     # STEP 2: Fusion
     print("\n[FUSION] Running outlier removal + confidence-weighted mean...")
     fused = fusion.fuse(extracted)
@@ -86,13 +113,11 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
         raise RuntimeError(f"LLM2 returned unexpected type {type(raw_output)}: {raw_output}")
     final_output = raw_output
 
+    # Derive protected numeric paths directly from schema — updates automatically when schema changes
+    numeric_paths = _get_numeric_paths(REQUIRED_SCHEMA)
+
     # Guard: re-inject numeric values from fused data — LLM2 must not alter these
-    NUMERIC_PROTECTED = [
-        ("interaction_profile", "activity_value"),
-        ("molecule", "molecular_weight"),
-        ("molecule", "logP"),
-    ]
-    for *path, leaf in NUMERIC_PROTECTED:
+    for *path, leaf in numeric_paths:
         try:
             src = fused
             for key in path:
@@ -113,19 +138,14 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
                     and math.isclose(existing, fused_val, rel_tol=1e-9)):
                 if existing != fused_val:
                     print(f"[GUARD] LLM2 altered {'.'.join(path + [leaf])}: "
-                          f"{dst.get(leaf)} → restoring {fused_val}")
-                    dst[leaf] = fused_val
-                else:
-                    dst[leaf] = fused_val  # values equivalent; restore without noise
+                          f"{existing} → restoring {fused_val}")
+            dst[leaf] = fused_val
         except (KeyError, TypeError):
             print(f"[WARN] Could not restore {'.'.join(path + [leaf])}: path missing in LLM2 output")
 
     # Null sentinel: where fusion returned None, override LLM2's schema-default zero
     # so the final output honestly signals "unresolvable" rather than a fake 0.0
-    NULL_SENTINELS = [
-        ("interaction_profile", "activity_value"),
-    ]
-    for *path, leaf in NULL_SENTINELS:
+    for *path, leaf in numeric_paths:
         try:
             src = fused
             for key in path:

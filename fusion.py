@@ -1,15 +1,5 @@
 import statistics
-
-# Fields where absolute deviation is more meaningful than ratio
-ABSOLUTE_THRESHOLD = {
-    "logP": 1.5,               # candidates must be within 1.5 units of median
-    "molecular_weight": 50.0,  # candidates must be within 50 Da of median
-}
-
-# Plausibility floors — values below these are physically implausible and dropped
-PLAUSIBILITY_FLOOR = {
-    "activity_value": 0.01,    # anything below 0.01 nM is sub-picomolar, implausible for drugs
-}
+from fusion_config import ABSOLUTE_THRESHOLD, PLAUSIBILITY_FLOOR, CONFIDENCE_CAP
 
 # Minimum confidence to participate in fusion
 MIN_CONFIDENCE = 0.4
@@ -45,6 +35,17 @@ def _normalize_units(candidates: list) -> list:
         normalized.append(c)
     return normalized
 
+def _check_consensus_hallucination(candidates: list) -> bool:
+    """
+    Returns True if all numeric candidates have identical values — a hallucination signal.
+    A real multi-source extraction always has some variance.
+    """
+    values = [c["value"] for c in candidates if isinstance(c.get("value"), (int, float))]
+    if len(values) < 2:
+        return False
+    return len(set(values)) == 1
+
+
 def _fuse_candidates(candidates: list, field_name: str = ""):
     """
     Takes a list of candidate dicts {"value": ..., "confidence": ..., "source_type": ...}
@@ -66,6 +67,23 @@ def _fuse_candidates(candidates: list, field_name: str = ""):
     # Normalize per-candidate units to nM on survivors only
     if field_name in ("activity_value",):
         candidates = _normalize_units(candidates)
+
+    # Cap overconfident candidates for fields where LLMs are structurally unreliable
+    if field_name in CONFIDENCE_CAP:
+        cap = CONFIDENCE_CAP[field_name]
+        candidates = [
+            {**c, "confidence": min(c.get("confidence", 0), cap)}
+            for c in candidates
+        ]
+
+    # Warn if all numeric candidates are identical — consensus hallucination signal
+    if _check_consensus_hallucination(candidates):
+        print(f"[FUSION] WARNING: all '{field_name}' candidates have identical values "
+              f"— possible consensus hallucination, confidence capped to 0.5")
+        candidates = [
+            {**c, "confidence": min(c.get("confidence", 0), 0.5)}
+            for c in candidates
+        ]
 
     numeric = [(c["value"], c["confidence"]) for c in candidates if isinstance(c["value"], (int, float))]
     string_candidates = [(c["value"], c["confidence"]) for c in candidates if isinstance(c["value"], str)]
