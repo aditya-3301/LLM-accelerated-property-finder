@@ -40,8 +40,7 @@ def _get_numeric_paths(schema: dict, path: tuple = ()) -> list:
 # Resolve a molecule name or SMILES string to a PubChem CID.
 def fetch_cid(molecule_input: str) -> int:
     """
-    Tries a name-based lookup first, then falls back to SMILES if the name
-    query returns nothing. Returns 0 if both attempts fail.
+    Tries a name-based lookup, returns 0 if attempt fails.
     """
     try:
         url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{requests.utils.quote(molecule_input)}/cids/JSON"
@@ -49,10 +48,6 @@ def fetch_cid(molecule_input: str) -> int:
         if r.status_code == 200:
             return r.json()["IdentifierList"]["CID"][0]
 
-        url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/{requests.utils.quote(molecule_input)}/cids/JSON"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            return r.json()["IdentifierList"]["CID"][0]
 
     except Exception as e:
         print(f"[CID] Lookup failed: {e}")
@@ -190,8 +185,8 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
 
 # Entry point
 if __name__ == "__main__":
-    molecule = input("Enter molecule name / SMILES / CID: ").strip()
-    debug_input = input("Debug mode? Show LLM1 extraction + fused intermediate? (y/n): ").strip().lower()
+    molecule = input("Enter molecule name OR CID: ").strip()
+    debug_input = input("Debug mode?").strip().lower()
     debug = debug_input == "y"
 
     result = run_pipeline(molecule, debug=debug)
