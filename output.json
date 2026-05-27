@@ -1,12 +1,44 @@
 {
-  "cid": 5202,
+  "cid": 0,
+  "identity": {
+    "drugbank_id": "DB06681",
+    "common_name": "Vicodin",
+    "cas_number": "79817-86-6",
+    "synonyms": [
+      "Hydrocodone bitartrate"
+    ],
+    "smiles": "OC(=O)[C@H]1(C)C=C(C(C(=O)O)c2c(cc(cc2)C(=O)O)C)C1O"
+  },
   "molecule": {
-    "molecular_weight": 176.1923,
-    "logP": 3.9275
+    "molecular_formula": "C18H21NO4",
+    "molecular_composition": "C18H21NO4",
+    "molecular_weight": 375.37,
+    "net_formal_charge": 0,
+    "logP": 3.16,
+    "num_h_acceptors": 4.0,
+    "num_h_donors": 1.0,
+    "molecular_polar_surface_area": 104.5
   },
   "interaction_profile": {
     "activity_type": "IC50",
-    "activity_value": 1.1556,
-    "activity_unit": "nM"
+    "activity_value": null,
+    "activity_unit": "nM",
+    "reported_ic50": null,
+    "ec50": null
+  },
+  "admet": {
+    "e_solubility": 0.0056,
+    "gi_absorption": "High",
+    "logkp": 3.34,
+    "bbb_penetration": "BBB+",
+    "p_gp_substrate": "Yes",
+    "cyp_inhibitors": []
+  },
+  "toxicity": {
+    "carcinogenicity": "Positive",
+    "immunotoxicity": "Negative",
+    "mutagenicity": "Positive",
+    "cytotoxicity": "Positive",
+    "ld50": 160.0
   }
 }

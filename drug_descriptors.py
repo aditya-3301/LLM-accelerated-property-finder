@@ -24,13 +24,10 @@ REQUIRED_SCHEMA = {
         "molecular_formula":          "",   # e.g. "C9H8O4"
         "molecular_composition":      "",   # human-readable element breakdown
         "molecular_weight":           0.0,  # average MW  (Da)
-        "exact_mol_weight":           0.0,  # monoisotopic MW (Da)
         "net_formal_charge":          0,    # integer charge
         "logP":                       0.0,  # Wildman-Crippen logP (kept from v1)
-        "alogp":                      0.0,  # AlogP (Ghose-Crippen variant)
         "num_h_acceptors":            0,    # general H-bond acceptor count
         "num_h_donors":               0,    # general H-bond donor count
-        "num_rotatable_bonds":        0,
         "molecular_polar_surface_area": 0.0,  # TPSA (Å²)
     },
 
@@ -42,17 +39,6 @@ REQUIRED_SCHEMA = {
         "reported_ic50":  0.0,     # explicit IC50 in nM when available
         "ec50":           0.0,     # EC50 in nM
     },
-
-    # ── ADMET predictions ────────────────────────────────────────────────────
-    "admet": {
-        "e_solubility":    0.0,   # log mol/L (ESOL predicted aqueous solubility)
-        "gi_absorption":   "",    # "High" | "Low"
-        "logkp":           0.0,   # skin permeation coefficient (log cm/s)
-        "bbb_penetration": "",    # "BBB+" | "BBB-"
-        "p_gp_substrate":  "",    # "Yes" | "No"
-        "cyp_inhibitors":  [],    # list of inhibited CYPs, e.g. ["CYP3A4", "CYP2D6"]
-    },
-
     # ── Toxicity endpoints ───────────────────────────────────────────────────
     "toxicity": {
         "carcinogenicity":  "",   # "Positive" | "Negative" | "Inconclusive"

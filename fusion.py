@@ -65,7 +65,7 @@ def _fuse_candidates(candidates: list, field_name: str = ""):
     if not candidates:
         return None
     # Normalize per-candidate units to nM on survivors only
-    if field_name in ("activity_value",):
+    if field_name in ("activity_value", "reported_ic50", "ec50"):
         candidates = _normalize_units(candidates)
 
     # Cap overconfident candidates for fields where LLMs are structurally unreliable

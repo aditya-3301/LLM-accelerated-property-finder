@@ -32,7 +32,7 @@ def _get_numeric_paths(schema: dict, path: tuple = ()) -> list:
             continue
         if isinstance(val, dict):
             paths.extend(_get_numeric_paths(val, path + (key,)))
-        elif isinstance(val, (int, float)):
+        elif isinstance(val, (int, float)) and not isinstance(val, bool):
             paths.append(path + (key,))
     return paths
 
@@ -118,9 +118,17 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
     # guard automatically covers any new fields added to schema.py in future.
     numeric_paths = _get_numeric_paths(REQUIRED_SCHEMA)
 
-    # Re-inject fused numeric values into the final output. LLM2 is instructed
-    # not to change these, but instruction-following is not guaranteed — this
-    # acts as a hard enforcement layer rather than a trust-but-verify check.
+    # Look up the schema default for any leaf given its path.
+    def _schema_default(path, leaf):
+        node = REQUIRED_SCHEMA
+        for k in path:
+            node = node[k]
+        return node[leaf]
+
+    # Re-inject fused numeric values, but ONLY when fusion produced a
+    # meaningful (non-default) result. If fused_val == schema default it
+    # means LLM1 extracted nothing useful for that field; in that case keep
+    # whatever LLM2 filled in rather than overwriting it with a silent zero.
     for *path, leaf in numeric_paths:
         try:
             src = fused
@@ -128,24 +136,28 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
                 src = src[key]
             fused_val = src[leaf]
         except (KeyError, TypeError):
-            continue  # this field was not present in the fused data at all
+            continue
 
         if fused_val is None:
             continue
 
+        default = _schema_default(tuple(path), leaf)
+        if fused_val == default:
+            continue   # fusion got nothing useful — trust LLM2 instead
+
         try:
             dst = final_output
             for key in path:
-                dst = dst[key]  # intentionally don't create missing sections
+                dst = dst[key]
             existing = dst.get(leaf)
             if not (isinstance(existing, float) and isinstance(fused_val, float)
                     and math.isclose(existing, fused_val, rel_tol=1e-9)):
                 if existing != fused_val:
-                    print(f"[GUARD] LLM2 changed {'.'.join(path + [leaf])} "
+                    print(f"[GUARD] LLM2 changed {'.'.join(list(path) + [leaf])} "
                           f"from {existing} to {fused_val} — restoring fused value.")
             dst[leaf] = fused_val
         except (KeyError, TypeError):
-            print(f"[WARN] Could not restore {'.'.join(path + [leaf])}: "
+            print(f"[WARN] Could not restore {'.'.join(list(path) + [leaf])}: "
                   f"the path is missing from LLM2's output.")
 
     # Where fusion returned None (no plausible value could be resolved), make

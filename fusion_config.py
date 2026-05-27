@@ -66,10 +66,4 @@ CONFIDENCE_CAP = {
     "alogp":                        0.7,   # algorithm-specific; variant confusion is common
     "molecular_polar_surface_area": 0.75,  # conformation-dependent; 2-D approximation
 
-    # ── ADMET predictions (model outputs, not measurements) ──────────────────
-    "e_solubility": 0.7,    # ESOL is a regression model; uncertainty is inherent
-    "logkp":        0.7,    # skin permeation is rarely measured; mostly predicted
-    "bbb_penetration": 0.75, # binary classifier output — LLMs often over-commit
-    "gi_absorption":   0.75, # same rationale as bbb_penetration
-    "p_gp_substrate":  0.75, # substrate prediction is probabilistic
 }
