@@ -16,22 +16,28 @@ _UNIT_TO_NM = {
     "nm": 1.0,
 }
 
-def _normalize_units(candidates: list) -> list:
+def _normalize_units(candidates: list, unit_override: str = None) -> list:
     """
-    If a candidate dict carries a per-candidate 'unit' key, convert its value to nM.
-    Candidates without a 'unit' key are assumed already in nM (LLM1's contract).
+    Convert activity candidate values to nM.
+    Priority: per-candidate 'unit' key > unit_override > assume nM.
+    unit_override is the fused activity_unit value from the same section
+    (e.g. "uM") when LLM1 puts the unit in a separate field rather than
+    per-candidate.
     """
     normalized = []
     for c in candidates:
-        unit = c.get("unit", "nm").strip().lower()
+        # Per-candidate unit takes priority; fall back to section-level override
+        raw_unit = c.get("unit") or unit_override or "nm"
+        unit = raw_unit.strip().lower()
         factor = _UNIT_TO_NM.get(unit)
         if factor is None:
-            print(f"[FUSION] Unknown unit '{c.get('unit')}' on candidate — assuming nM")
+            print(f"[FUSION] Unknown unit '{raw_unit}' — assuming nM")
             factor = 1.0
         if factor != 1.0 and isinstance(c.get("value"), (int, float)):
             c = dict(c)  # don't mutate original
+            original = c["value"]
             c["value"] = c["value"] * factor
-            print(f"[FUSION] Converted {c['value'] / factor} {unit.upper()} → {c['value']} nM")
+            print(f"[FUSION] Converted {original} {raw_unit.upper()} → {c['value']} nM")
         normalized.append(c)
     return normalized
 
@@ -46,29 +52,30 @@ def _check_consensus_hallucination(candidates: list) -> bool:
     return len(set(values)) == 1
 
 
-def _fuse_candidates(candidates: list, field_name: str = ""):
+def _fuse_candidates(candidates: list, field_name: str = "", unit_override: str = None):
     """
     Takes a list of candidate dicts {"value": ..., "confidence": ..., "source_type": ...}
     OR a plain scalar list (e.g. ["IC50", "EC50"]) and returns a single fused value.
-    - Candidate dicts: outlier removal + confidence-weighted mean for numerics,
-      highest-confidence for strings
-    - Plain scalar list: first element (LLM1 failed to wrap properly)
+    unit_override: section-level unit string passed in when LLM1 reports units
+    as a separate field rather than per-candidate.
     """
     if not candidates:
         return None
 
-    # If LLM1 returned a plain scalar list instead of candidate dicts, take the first element
+    # Plain scalar list — LLM1 didn't wrap properly; take first element
     if not all(_is_candidate_dict(item) for item in candidates):
         return candidates[0]
-    # Drop low-confidence candidates first — no point normalizing units on discarded candidates
+
+    # Drop low-confidence candidates
     candidates = [c for c in candidates if c.get("confidence", 0) >= MIN_CONFIDENCE]
     if not candidates:
         return None
-    # Normalize per-candidate units to nM on survivors only
-    if field_name in ("activity_value", "reported_ic50", "ec50"):
-        candidates = _normalize_units(candidates)
 
-    # Cap overconfident candidates for fields where LLMs are structurally unreliable
+    # Normalize units to nM using per-candidate key or section-level override
+    if field_name in ("activity_value", "reported_ic50", "ec50"):
+        candidates = _normalize_units(candidates, unit_override=unit_override)
+
+    # Cap overconfident candidates
     if field_name in CONFIDENCE_CAP:
         cap = CONFIDENCE_CAP[field_name]
         candidates = [
@@ -76,7 +83,7 @@ def _fuse_candidates(candidates: list, field_name: str = ""):
             for c in candidates
         ]
 
-    # Warn if all numeric candidates are identical — consensus hallucination signal
+    # Consensus hallucination warning
     if _check_consensus_hallucination(candidates):
         print(f"[FUSION] WARNING: all '{field_name}' candidates have identical values "
               f"— possible consensus hallucination, confidence capped to 0.5")
@@ -92,19 +99,18 @@ def _fuse_candidates(candidates: list, field_name: str = ""):
         values = [v for v, c in numeric]
         confs  = [c for v, c in numeric]
 
-        # Plausibility floor — drop physically implausible values before outlier removal
+        # Plausibility floor
         if field_name in PLAUSIBILITY_FLOOR:
             floor = PLAUSIBILITY_FLOOR[field_name]
             filtered = [(v, c) for v, c in zip(values, confs) if v >= floor]
             if not filtered:
-                return None  # all values were physically implausible
+                return None
             values = [v for v, c in filtered]
             confs  = [c for v, c in filtered]
 
-        # Outlier removal — always run if more than 1 candidate
+        # Outlier removal
         if len(values) >= 2:
             med = statistics.median(values)
-
             if field_name in ABSOLUTE_THRESHOLD:
                 threshold = ABSOLUTE_THRESHOLD[field_name]
                 filtered = [
@@ -119,7 +125,6 @@ def _fuse_candidates(candidates: list, field_name: str = ""):
                     ]
                 else:
                     filtered = list(zip(values, confs))
-
             if filtered:
                 values = [v for v, c in filtered]
                 confs  = [c for v, c in filtered]
@@ -136,19 +141,47 @@ def _fuse_candidates(candidates: list, field_name: str = ""):
     return None
 
 
+def _extract_unit_override(section: dict) -> str:
+    """
+    Reads the activity_unit field from a section dict (before fusion) and
+    returns the raw unit string so activity value candidates can be converted.
+    Handles both candidate-list format and plain scalar.
+    """
+    unit_field = section.get("activity_unit")
+    if not unit_field:
+        return None
+    if isinstance(unit_field, list):
+        # Candidate list — take highest-confidence unit
+        valid = [c for c in unit_field if _is_candidate_dict(c)]
+        if valid:
+            best = max(valid, key=lambda c: c.get("confidence", 0))
+            return best.get("value", "nm")
+    if isinstance(unit_field, str):
+        return unit_field
+    return None
+
+
 def fuse(extracted: dict) -> dict:
     """
     Recursively walks the extracted dict.
     Leaf nodes (lists of candidates) → fused to a single value.
     Branch nodes (dicts) → recurse.
     Scalars → passed through directly.
+
+    Special case: interaction_profile section passes the activity_unit
+    as a unit_override to activity value fields so unit conversion works
+    even when LLM1 reports units as a separate field.
     """
+    # Extract section-level unit override before recursing, if present
+    unit_override = _extract_unit_override(extracted) if "activity_unit" in extracted else None
+
     fused = {}
     for key, value in extracted.items():
         if isinstance(value, dict):
             fused[key] = fuse(value)
         elif isinstance(value, list):
-            fused[key] = _fuse_candidates(value, field_name=key)
+            override = unit_override if key in ("activity_value", "reported_ic50", "ec50") else None
+            fused[key] = _fuse_candidates(value, field_name=key, unit_override=override)
         else:
-            fused[key] = value  # scalar passthrough (e.g. cid)
+            fused[key] = value  # scalar passthrough
     return fused

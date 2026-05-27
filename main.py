@@ -1,6 +1,7 @@
 import math
 import json
 import os
+import time
 import requests
 from huggingface_hub import InferenceClient
 from dotenv import load_dotenv
@@ -18,14 +19,8 @@ if not HF_TOKEN:
 
 client = InferenceClient(token=HF_TOKEN)
 
+
 def _get_numeric_paths(schema: dict, path: tuple = ()) -> list:
-    """
-    Recursively walks the schema and collects the full path to every numeric
-    leaf (int or float). These paths are used later to protect fused values
-    from being overwritten by LLM2. 'cid' is excluded because it is injected
-    directly and never passes through the fusion engine.
-    e.g. → [("molecule", "logP"), ("interaction_profile", "activity_value"), ...]
-    """
     paths = []
     for key, val in schema.items():
         if key == "cid":
@@ -37,31 +32,94 @@ def _get_numeric_paths(schema: dict, path: tuple = ()) -> list:
     return paths
 
 
-# Resolve a molecule name or SMILES string to a PubChem CID.
-def fetch_cid(molecule_input: str) -> int:
-    """
-    Tries a name-based lookup, returns 0 if attempt fails.
-    """
-    try:
-        url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{requests.utils.quote(molecule_input)}/cids/JSON"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            return r.json()["IdentifierList"]["CID"][0]
-
-
-    except Exception as e:
-        print(f"[CID] Lookup failed: {e}")
-
+def fetch_cid(molecule_input: str, retries: int = 5, wait: int = 5) -> int:
+    """Resolve a molecule name or SMILES to a PubChem CID. Retries on DNS/network failure."""
+    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{requests.utils.quote(molecule_input)}/cids/JSON"
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                return r.json()["IdentifierList"]["CID"][0]
+            return 0  # Bad status but not a network error — don't retry
+        except Exception as e:
+            if attempt < retries:
+                print(f"[CID] Attempt {attempt} failed ({e.__class__.__name__}). Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"[CID] All {retries} attempts failed. Could not resolve CID.")
     return 0
 
-# Main pipeline: takes a molecule identifier and returns a validated JSON record.
+
+
+def fetch_name_from_cid(cid: int, retries: int = 5, wait: int = 5) -> str:
+    """
+    Resolve a PubChem CID to the best human-readable name for LLM1.
+    Strategy:
+    - Fetch both the IUPAC name and the first synonym in parallel
+    - If IUPAC name is short enough (<=60 chars), use it — it's unambiguous
+    - If IUPAC name is long/complex, use the first synonym (common name) instead
+    - Falls back to whatever is available if one request fails
+    Retries on DNS/network failure.
+    """
+    iupac_name = ""
+    common_name = ""
+
+    def _fetch_with_retry(url, extractor):
+        for attempt in range(1, retries + 1):
+            try:
+                r = requests.get(url, timeout=10)
+                if r.status_code == 200:
+                    return extractor(r)
+                return ""  # bad status, don't retry
+            except Exception as e:
+                if attempt < retries:
+                    print(f"[CID] Attempt {attempt} failed ({e.__class__.__name__}). Retrying in {wait}s...")
+                    time.sleep(wait)
+        print(f"[CID] All {retries} attempts failed for URL.")
+        return ""
+
+    iupac_name = _fetch_with_retry(
+        f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/property/IUPACName/JSON",
+        lambda r: r.json()["PropertyTable"]["Properties"][0].get("IUPACName", "")
+    )
+
+    common_name = _fetch_with_retry(
+        f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/synonyms/JSON",
+        lambda r: r.json()["InformationList"]["Information"][0].get("Synonym", [""])[0]
+    )
+
+    # Prefer common name if IUPAC is too long for the model to parse reliably
+    IUPAC_LENGTH_LIMIT = 60
+    if iupac_name and len(iupac_name) <= IUPAC_LENGTH_LIMIT:
+        print(f"[CID] Using IUPAC name: {iupac_name}")
+        return iupac_name
+    elif common_name:
+        if iupac_name:
+            print(f"[CID] IUPAC name too complex ({len(iupac_name)} chars) — using common name: {common_name}")
+        else:
+            print(f"[CID] Using common name: {common_name}")
+        return common_name
+    elif iupac_name:
+        print(f"[CID] Only IUPAC name available (long): {iupac_name}")
+        return iupac_name
+
+    return ""
+
+
 def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
 
-    # CID resolution — accept a raw integer CID or resolve from name/SMILES.
+    # CID resolution
     if molecule_input.isdigit():
         cid = int(molecule_input)
         print(f"[CID] Using provided CID: {cid}")
+        molecule_name = fetch_name_from_cid(cid)
+        if molecule_name:
+            print(f"[CID] Resolved to name: {molecule_name}")
+        else:
+            print("[CID] Could not resolve a name — LLM1 will receive the raw CID.")
+            molecule_name = molecule_input
     else:
+        molecule_name = molecule_input
         print(f"[CID] Resolving PubChem CID for: {molecule_input}")
         cid = fetch_cid(molecule_input)
         if cid:
@@ -69,10 +127,10 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
         else:
             print("[CID] Could not resolve a CID — defaulting to 0.")
 
-    # Step 1 — LLM1 extracts raw multi-candidate property values from literature.
-    print(f"\n[LLM1] Extracting properties for: {molecule_input}")
+    # Step 1 — LLM1 extracts using the resolved molecule name
+    print(f"\n[LLM1] Extracting properties for: {molecule_name}")
     try:
-        extracted = LLM1.run_extraction(molecule_input, REQUIRED_SCHEMA, client)
+        extracted = LLM1.run_extraction(molecule_name, REQUIRED_SCHEMA, client)
     except Exception as e:
         raise RuntimeError(f"LLM1 extraction failed: {e}")
     print("[LLM1] Extraction complete.")
@@ -81,10 +139,7 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
         print("\n[DEBUG] LLM1 raw extraction:")
         print(json.dumps(extracted, indent=2))
 
-    # LLM1 sometimes nests its output under a CID key rather than returning a
-    # flat schema-shaped dict. For example: {"5754": {"molecule": ...}} instead
-    # of {"molecule": ...}. Detect this by checking whether any top-level key
-    # matches the schema, and unwrap if exactly one wrapper key is present.
+    # Unwrap if LLM1 nested output under a single wrapper key
     schema_keys = set(REQUIRED_SCHEMA.keys()) - {"cid"}
     if not schema_keys.intersection(extracted.keys()):
         wrapper_keys = [k for k in extracted if isinstance(extracted[k], dict)]
@@ -92,7 +147,7 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
             print(f"[NORM] Output was wrapped under key '{wrapper_keys[0]}' — unwrapping.")
             extracted = extracted[wrapper_keys[0]]
 
-    # Step 2 — Fusion collapses the noisy candidate arrays into single values.
+    # Step 2 — Fusion
     print("\n[FUSION] Removing outliers and computing confidence-weighted values...")
     fused = fusion.fuse(extracted)
 
@@ -102,33 +157,26 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
 
     print("[FUSION] Fusion complete.")
 
-    # Step 3 — LLM2 checks biological plausibility and builds the final record.
+    # Step 3 — LLM2 verification
     print("[LLM2] Verifying plausibility and assembling final record...")
     try:
         raw_output = LLM2.run_verification(fused, REQUIRED_SCHEMA, client)
     except Exception as e:
         raise RuntimeError(f"LLM2 verification failed: {e}")
 
-    # LLM2 now returns a parsed dict directly after internal JSON cleaning
     if not isinstance(raw_output, dict):
         raise RuntimeError(f"LLM2 returned unexpected type {type(raw_output)}: {raw_output}")
     final_output = raw_output
 
-    # Discover every numeric field path from the schema at runtime, so this
-    # guard automatically covers any new fields added to schema.py in future.
     numeric_paths = _get_numeric_paths(REQUIRED_SCHEMA)
 
-    # Look up the schema default for any leaf given its path.
     def _schema_default(path, leaf):
         node = REQUIRED_SCHEMA
         for k in path:
             node = node[k]
         return node[leaf]
 
-    # Re-inject fused numeric values, but ONLY when fusion produced a
-    # meaningful (non-default) result. If fused_val == schema default it
-    # means LLM1 extracted nothing useful for that field; in that case keep
-    # whatever LLM2 filled in rather than overwriting it with a silent zero.
+    # Re-inject fused numeric values where fusion produced a meaningful result
     for *path, leaf in numeric_paths:
         try:
             src = fused
@@ -143,7 +191,7 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
 
         default = _schema_default(tuple(path), leaf)
         if fused_val == default:
-            continue   # fusion got nothing useful — trust LLM2 instead
+            continue
 
         try:
             dst = final_output
@@ -160,10 +208,7 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
             print(f"[WARN] Could not restore {'.'.join(list(path) + [leaf])}: "
                   f"the path is missing from LLM2's output.")
 
-    # Where fusion returned None (no plausible value could be resolved), make
-    # sure the final output also carries None rather than the schema default of
-    # 0.0 that LLM2 may have filled in. A null in the output is an honest
-    # signal; a silent zero would be misleading.
+    # Mark fields where fusion returned None as null in final output
     for *path, leaf in numeric_paths:
         try:
             src = fused
@@ -176,26 +221,24 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
                 dst[leaf] = None
                 print(f"[INFO] {'.'.join(path + [leaf])} could not be resolved — marked as null.")
         except (KeyError, TypeError):
-            pass  # path is missing entirely; nothing to nullify
+            pass
 
-    # Audit the final output against the schema to catch any keys that LLM2
-    # may have silently dropped, checking both top-level and one level deep.
+    # Audit for missing keys
     def _validate_keys(output: dict, schema: dict, path: str = ""):
         for key in schema:
             if key == "cid":
-                continue  # cid is injected separately below, not from LLM2
+                continue
             if key not in output:
                 print(f"[WARN] Expected field missing from output: {path}{key}")
             elif isinstance(schema[key], dict) and isinstance(output.get(key), dict):
                 _validate_keys(output[key], schema[key], path=f"{path}{key}.")
     _validate_keys(final_output, REQUIRED_SCHEMA)
-    
+
     final_output["cid"] = cid
     print("[LLM2] Verification complete.")
     return final_output
 
 
-# Entry point
 if __name__ == "__main__":
     molecule = input("Enter molecule name OR CID: ").strip()
     debug_input = input("Debug mode?").strip().lower()

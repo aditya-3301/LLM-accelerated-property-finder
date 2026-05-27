@@ -28,8 +28,11 @@ def run_verification(fused_data, schema, client, retries=3, wait=10):
         "output EXACTLY as-is. Do not round, zero out, or change these values for any reason.\n"
         "- If a numeric field in FUSED DATA IS the schema default (0.0 / 0), you may fill "
         "it from your knowledge if you are confident; otherwise leave it as the default.\n"
-        "- Fill missing string / list fields (smiles, common_name, cas_number, synonyms, "
-        "drugbank_id, biological context) from your knowledge where confident.\n"
+        "- Fill missing string / list fields (common_name, cas_number, synonyms, drugbank_id) "
+        "from your knowledge ONLY if you are certain — do not guess.\n"
+        "- SMILES RULE: only fill smiles if you are 100% certain of the exact structure. "
+        "If the compound is obscure or you have any doubt, leave smiles as an empty string. "
+        "A wrong SMILES is worse than a missing one.\n"
         "- Output ONLY the fields present in the schema. Do not add any extra keys.\n"
         "- ACTIVITY TYPE RULE: if activity_type contains '|' or multiple options, resolve "
         "it to a single value: IC50, EC50, Ki, or Kd based on the molecule's known pharmacology.\n"
@@ -38,9 +41,6 @@ def run_verification(fused_data, schema, client, retries=3, wait=10):
         "- Strict types: counts (num_h_acceptors, num_h_donors, num_rotatable_bonds, "
         "net_formal_charge) must be integers. All other numeric fields must be floats.\n"
         "- ENUM CONSTRAINTS — use ONLY these exact strings:\n"
-        "    gi_absorption   : 'High' or 'Low'\n"
-        "    bbb_penetration : 'BBB+' or 'BBB-'\n"
-        "    p_gp_substrate  : 'Yes' or 'No'\n"
         "    carcinogenicity : 'Positive', 'Negative', or 'Inconclusive'\n"
         "    immunotoxicity  : 'Positive', 'Negative', or 'Inconclusive'\n"
         "    mutagenicity    : 'Positive', 'Negative', or 'Inconclusive'\n"
@@ -64,7 +64,7 @@ def run_verification(fused_data, schema, client, retries=3, wait=10):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content}
                 ],
-                max_tokens=1000,
+                max_tokens=2200,
                 temperature=0.1
             )
             return _clean_json_output(result.choices[0].message.content)

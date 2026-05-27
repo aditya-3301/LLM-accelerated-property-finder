@@ -53,7 +53,7 @@ def run_extraction(molecule_input, schema, client, retries=3, wait=10):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content}
                 ],
-                max_tokens=2000,
+                max_tokens=2200,
                 temperature=temperature
             )
             raw_text = result.choices[0].message.content
