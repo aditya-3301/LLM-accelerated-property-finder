@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import LLM1
 import LLM2
 import fusion
-from schema import REQUIRED_SCHEMA
+from drug_descriptors import REQUIRED_SCHEMA
 
 # Load environment variables and authenticate with Hugging Face.
 load_dotenv()
