@@ -1,3 +1,20 @@
+"""
+LLM2.py — Plausibility verification and final record assembly.
+
+Changes vs previous version
+----------------------------
+* clean_energy removed from all prompts and type-enforcement rules.
+* molecular_composition: LLM2 validates and optionally recomputes the
+  element-fraction dict (not a string) and re-normalises fractions to 1.0.
+* Integer-field enforcement is explicit; LLM2 must not produce floats for
+  number_of_heavy_atoms, net_formal_charge, num_h_acceptors_*, num_h_donors*,
+  num_rotatable_bonds.
+* CAS number preservation: LLM2 must not substitute an alternate CAS.
+* Provenance metadata: LLM2 adds a top-level "provenance" key documenting
+  which fields were computed vs. LLM-extracted vs. validated-by-SMILES.
+* Composition cross-check is now element-level (fractions must sum to 1.0).
+"""
+
 import json
 import re
 import time
@@ -5,7 +22,7 @@ from huggingface_hub.errors import HfHubHTTPError
 
 
 def _clean_json_output(text: str) -> dict:
-    """Strip markdown fences and parse JSON. Mirrors LLM1's clean_json_output."""
+    """Strip markdown fences and parse JSON."""
     matches = re.findall(r'```json\s*(.*?)\s*```', text, re.DOTALL)
     if matches:
         candidate = matches[-1]
@@ -18,55 +35,75 @@ def _clean_json_output(text: str) -> dict:
     return json.loads(candidate)
 
 
-def run_verification(fused_data: dict, schema: dict, client, retries: int = 3, wait: int = 10) -> dict:
+def run_verification(
+    fused_data: dict,
+    schema: dict,
+    client,
+    retries: int = 3,
+    wait: int = 10,
+) -> dict:
     """
     LLM2: plausibility verification and final record assembly.
-    Receives the fused intermediate; should preserve all non-default numeric
-    values and only fill genuinely missing fields.
+    Receives the fused intermediate and outputs the final clean record.
     """
     system_prompt = (
         "You are a biomedical verification agent and JSON builder.\n\n"
+
         "YOUR ROLE: You are a VERIFIER, not an extractor. You receive PRE-FILLED FUSED DATA. "
-        "Your job is to check plausibility, fill genuinely missing fields, and output the final record.\n\n"
-        "STRICT RULES:\n"
+        "Check plausibility, fill genuinely missing fields, and output the final record.\n\n"
+
+        "STRICT RULES\n"
+
         "1. PRESERVE NUMERICS: every numeric field in FUSED DATA that is not the schema default "
         "(0.0 for floats, 0 for integers) MUST be copied to your output EXACTLY as-is. "
-        "Do not round, zero out, or modify these values for any reason.\n"
+        "Do not round, zero out, or modify these values.\n\n"
+
         "2. FILL MISSING: if a numeric field IS the schema default (0.0 / 0), you MAY fill it "
-        "from your knowledge if confident; otherwise leave it as the default.\n"
-        "3. STRING FIELDS: fill missing string and list fields (common_name, cas_number, unii, "
-        "drugbank_id, secondary_accession_numbers, synonyms) from your knowledge ONLY if certain. "
-        "Do not guess. A wrong DrugBank ID is worse than an empty string.\n"
-        "4. SMILES: only fill smiles if you are 100% certain of the exact canonical structure "
-        "for this specific molecule. If there is any doubt, output an empty string. "
-        "A wrong SMILES is actively harmful.\n"
-        "5. OUTPUT SCHEMA: output ONLY the fields present in the schema. Do not add extra keys.\n"
-        "6. ACTIVITY TYPE: if activity_type contains '|', multiple options, or is empty, resolve "
-        "to a single value from: IC50, EC50, Ki, Kd — based on the molecule's known pharmacology. "
-        "If unknown, use IC50 as default.\n"
-        "7. UNIT RULE: activity_unit must always be 'nM'. If fused data has M/mM/µM values, "
-        "convert them (1M=1e9nM, 1mM=1e6nM, 1µM=1000nM). If already nM, do not touch.\n"
-        "8. STRICT TYPES:\n"
-        "   - These fields MUST be integers: number_of_heavy_atoms, net_formal_charge, "
-        "num_h_acceptors_lipinski, num_h_donors_lipinski, num_h_acceptors, num_h_donors, "
-        "num_rotatable_bonds.\n"
-        "   - All other numeric fields MUST be floats (include a decimal point).\n"
-        "9. TOXICITY ENUMS: carcinogenicity, immunotoxicity, mutagenicity, cytotoxicity must be "
-        "exactly one of: 'Positive', 'Negative', 'Inconclusive'. No other values allowed.\n"
+        "from your knowledge if confident; otherwise leave it as the default.\n\n"
+
+        "3. STRING FIELDS: fill missing string and list fields from your knowledge ONLY if certain. "
+        "Do not guess. A wrong DrugBank ID or CAS number is worse than an empty string.\n\n"
+
+        "4. CAS NUMBER: do NOT substitute an alternate CAS for the one in fused data. "
+        "The fusion layer has already selected the canonical primary CAS. Preserve it.\n\n"
+
+        "5. DUPLICATE ACCESSIONS: secondary_accession_numbers must NOT contain the same value "
+        "as drugbank_id. Remove any duplicate before outputting.\n\n"
+
+        "6. SMILES: only fill smiles if 100% certain of the exact canonical structure. "
+        "If there is any doubt, output an empty string.\n\n"
+
+        "7. OUTPUT SCHEMA: output ONLY the fields present in the schema. No extra keys "
+        "except the permitted 'warnings' and 'provenance' lists described below.\n\n"
+
+        "8. STRICT INTEGER FIELDS — output integers (no decimal point) for:\n"
+        "   number_of_heavy_atoms, net_formal_charge, num_h_acceptors_lipinski,\n"
+        "   num_h_donors_lipinski, num_rotatable_bonds, num_h_acceptors, num_h_donors.\n\n"
+
+        "9. STRICT FLOAT FIELDS — output floats (must include decimal point) for:\n"
+        "   molecular_weight, exact_mol_weight, alogp, molecular_polar_surface_area.\n\n"
+
         "10. PLAUSIBILITY: if a numeric value grossly violates physical chemistry AND you have "
-        "specific knowledge it is wrong, you may correct it — but you MUST print a warning in "
-        "a top-level 'warnings' list. Do not silently change values.\n"
-        "11. INTERACTION BLOCK: if the molecule is not a pharmacological agent (e.g. it is a "
-        "nutrient, amino acid, or cofactor with no known receptor target), set activity_value, "
-        "reported_ic50, and ec50 to null and activity_type to an empty string.\n\n"
-        "12. CROSS-CHECK COMPUTED FIELDS: you have spare token budget — use it.\n"
-        "    a) Verify number_of_heavy_atoms by summing all non-H atoms in molecular_formula. "
-        "       Example: C9H8O4 → 9+4=13. If the fused value is wrong, correct it and add a warning.\n"
-        "    b) Verify molecular_composition fractions sum to 1.0 ± 0.005. "
-        "       If they don't, recompute using fraction = (count × atomic_mass) / molecular_weight. "
+        "specific knowledge it is wrong, you MAY correct it — but you MUST record the change in "
+        "a top-level 'warnings' list. Do not silently change values.\n\n"
+
+        "11. CROSS-CHECK — use your token budget for these verifications:\n"
+        "    a) number_of_heavy_atoms: sum all non-H atoms in molecular_formula.\n"
+        "       C9H8O4 → 9+4=13. If fused value is wrong, correct it and add a warning.\n"
+        "    b) molecular_composition: verify it is a dict {element: fraction}.\n"
+        "       Fractions must sum to 1.0 ± 0.005. If not, recompute:\n"
+        "         fraction = (atom_count × atomic_mass) / molecular_weight\n"
         "       Atomic masses: C=12.011, H=1.008, N=14.007, O=15.999, S=32.06, P=30.974.\n"
-        "    c) Verify exact_mol_weight ≠ molecular_weight. They must differ (monoisotopic vs average). "
-        "       If they are identical, set exact_mol_weight to null and add a warning.\n\n"
+        "       Output the corrected dict; add a warning if you changed it.\n"
+        "    c) exact_mol_weight ≠ molecular_weight. They must differ "
+        "(monoisotopic vs average). If identical, set exact_mol_weight to null and warn.\n\n"
+
+        "12. PROVENANCE: add a top-level 'provenance' object documenting the origin of key fields. "
+        "Use these keys where applicable:\n"
+        '    {"field": "<name>", "source": "pubchem|chembl|drugbank|llm_extracted|computed|verified",'
+        ' "notes": "<optional detail>"}\n'
+        "    Include at minimum: molecular_weight, molecular_formula, cas_number, smiles.\n\n"
+
         "Return ONLY a raw JSON object. No markdown fences, no explanation."
     )
 
