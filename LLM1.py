@@ -70,14 +70,21 @@ def run_extraction(molecule_input: str, cid: int, schema: dict, client, retries:
         "5. ACTIVITY TYPE: activity_type must be exactly one of: IC50, EC50, Ki, Kd.\n"
         "6. TOXICITY ENUMS: carcinogenicity, immunotoxicity, mutagenicity, cytotoxicity must be "
         "exactly: 'Positive', 'Negative', or 'Inconclusive'.\n"
-        "7. TYPES: number_of_atoms, net_formal_charge, num_h_acceptors_lipinski, "
+        "7. TYPES: number_of_heavy_atoms, net_formal_charge, num_h_acceptors_lipinski, "
         "num_h_donors_lipinski, num_h_acceptors, num_h_donors, num_rotatable_bonds "
         "must have integer values. All other numeric fields must be floats.\n"
         "8. CONFIDENCE: if you are not confident about a value, assign confidence < 0.4. "
         "Do not fabricate values — it is better to omit a field than to guess.\n"
-        "9. MOLECULAR COMPOSITION: format as element mass-fraction string, "
-        'e.g. "C: 0.389, H: 0.041, N: 0.057, O: 0.388, P: 0.125".\n'
-        "10. JSON: ensure all strings are properly quoted and all objects are properly closed.\n\n"
+        "9. MOLECULAR COMPOSITION: format as element mass-fraction string. "
+        "Compute each fraction as: (atom_count × atomic_mass) / molecular_weight. "
+        "Use atomic masses: C=12.011, H=1.008, N=14.007, O=15.999, S=32.06, P=30.974. "
+        "Example — aspirin C9H8O4 MW=180.16: "
+        "C=9×12.011/180.16=0.600, H=8×1.008/180.16=0.045, O=4×15.999/180.16=0.355 "
+        '→ "C: 0.600, H: 0.045, O: 0.355". Always verify fractions sum to ~1.0.\n'
+        "10. HEAVY ATOMS: number_of_heavy_atoms is the count of ALL non-hydrogen atoms. "
+        "Sum every element except H. Example — aspirin C9H8O4: 9 (C) + 4 (O) = 13, NOT 9. "
+        "Do not count only carbon atoms.\n"
+        "11. JSON: ensure all strings are properly quoted and all objects are properly closed.\n\n"
         f"SCHEMA:\n{schema_hint}\n\n"
         "Output ONLY valid JSON inside a ```json block. No explanation."
     )
@@ -86,8 +93,9 @@ def run_extraction(molecule_input: str, cid: int, schema: dict, client, retries:
     cid_hint = f" (PubChem CID: {cid})" if cid else ""
     user_content = (
         f"Extract all candidate property values for: {molecule_input}{cid_hint}\n"
-        f"Be thorough. Provide multiple candidates per field where evidence from "
-        f"different sources conflicts."
+        f"Provide AT LEAST 2 candidates per numeric field, drawing from different sources "
+        f"(PubChem, ChEMBL, DrugBank, literature). For well-known molecules this should be easy. "
+        f"Single candidates are only acceptable when a field is genuinely single-source."
     )
 
     temperature = 0.5
@@ -99,7 +107,7 @@ def run_extraction(molecule_input: str, cid: int, schema: dict, client, retries:
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": user_content},
                 ],
-                max_tokens=2200,
+                max_tokens=2000,
                 temperature=temperature,
             )
             raw_text = result.choices[0].message.content

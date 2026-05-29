@@ -47,7 +47,7 @@ def run_verification(fused_data: dict, schema: dict, client, retries: int = 3, w
         "7. UNIT RULE: activity_unit must always be 'nM'. If fused data has M/mM/µM values, "
         "convert them (1M=1e9nM, 1mM=1e6nM, 1µM=1000nM). If already nM, do not touch.\n"
         "8. STRICT TYPES:\n"
-        "   - These fields MUST be integers: number_of_atoms, net_formal_charge, "
+        "   - These fields MUST be integers: number_of_heavy_atoms, net_formal_charge, "
         "num_h_acceptors_lipinski, num_h_donors_lipinski, num_h_acceptors, num_h_donors, "
         "num_rotatable_bonds.\n"
         "   - All other numeric fields MUST be floats (include a decimal point).\n"
@@ -59,6 +59,14 @@ def run_verification(fused_data: dict, schema: dict, client, retries: int = 3, w
         "11. INTERACTION BLOCK: if the molecule is not a pharmacological agent (e.g. it is a "
         "nutrient, amino acid, or cofactor with no known receptor target), set activity_value, "
         "reported_ic50, and ec50 to null and activity_type to an empty string.\n\n"
+        "12. CROSS-CHECK COMPUTED FIELDS: you have spare token budget — use it.\n"
+        "    a) Verify number_of_heavy_atoms by summing all non-H atoms in molecular_formula. "
+        "       Example: C9H8O4 → 9+4=13. If the fused value is wrong, correct it and add a warning.\n"
+        "    b) Verify molecular_composition fractions sum to 1.0 ± 0.005. "
+        "       If they don't, recompute using fraction = (count × atomic_mass) / molecular_weight. "
+        "       Atomic masses: C=12.011, H=1.008, N=14.007, O=15.999, S=32.06, P=30.974.\n"
+        "    c) Verify exact_mol_weight ≠ molecular_weight. They must differ (monoisotopic vs average). "
+        "       If they are identical, set exact_mol_weight to null and add a warning.\n\n"
         "Return ONLY a raw JSON object. No markdown fences, no explanation."
     )
 

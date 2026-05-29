@@ -15,6 +15,55 @@ def _is_candidate_dict(item) -> bool:
     return isinstance(item, dict) and "value" in item
 
 
+_UNIT_TO_NM = {
+    "m":  1e9,
+    "mm": 1e6,
+    "um": 1e3,
+    "µm": 1e3,
+    "nm": 1.0,
+}
+
+def _normalize_units(candidates: list, unit_override: str = None) -> list:
+    """
+    Convert per-candidate activity values to nM.
+    Unit is resolved in priority order:
+      1. candidate's own 'unit' key
+      2. unit_override (extracted from the section's activity_unit field)
+      3. default: assume already nM
+    """
+    normalized = []
+    for c in candidates:
+        raw_unit = c.get("unit") or unit_override or "nm"
+        unit = raw_unit.strip().lower()
+        factor = _UNIT_TO_NM.get(unit)
+        if factor is None:
+            print(f"[FUSION] Unknown unit '{raw_unit}' on candidate — assuming nM")
+            factor = 1.0
+        if factor != 1.0 and isinstance(c.get("value"), (int, float)):
+            c = dict(c)  # don't mutate original
+            original = c["value"]
+            c["value"] = c["value"] * factor
+            print(f"[FUSION] Converted {original} {raw_unit.upper()} → {c['value']} nM")
+        normalized.append(c)
+    return normalized
+
+
+def _check_consensus_hallucination(candidates: list, field_name: str = "") -> bool:
+    """
+    Returns True if all numeric candidates carry the exact same value —
+    a signal that the model echoed one number across sources rather than
+    retrieving independent measurements.
+    Only meaningful when there are 2+ candidates.
+    """
+    values = [
+        c["value"] for c in candidates
+        if isinstance(c.get("value"), (int, float))
+    ]
+    if len(values) < 2:
+        return False
+    return len(set(values)) == 1
+
+
 def _fuse_candidates(candidates: list, field_name: str = "", unit_override: str = None):
     """
     Fuses a list of candidate dicts:
