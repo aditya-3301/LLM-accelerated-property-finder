@@ -376,20 +376,17 @@ def _deduplicate_secondary_accessions(fused: dict) -> dict:
     """
     Remove any value from secondary_accession_numbers that is identical
     (case-insensitive) to the primary drugbank_id.
+    Works on the flat schema — fields are top-level keys.
     """
-    identity = fused.get("identity")
-    if not isinstance(identity, dict):
-        return fused
-
-    primary = (identity.get("drugbank_id") or "").strip().upper()
-    secondary = identity.get("secondary_accession_numbers")
+    primary = (fused.get("drugbank_id") or "").strip().upper()
+    secondary = fused.get("secondary_accession_numbers")
 
     if primary and isinstance(secondary, list):
         cleaned = [s for s in secondary if s.strip().upper() != primary]
         if len(cleaned) != len(secondary):
             removed = [s for s in secondary if s.strip().upper() == primary]
             print(f"[FUSION] Removed duplicate accession(s) from secondary list: {removed}")
-        identity["secondary_accession_numbers"] = cleaned
+        fused["secondary_accession_numbers"] = cleaned
 
     return fused
 
