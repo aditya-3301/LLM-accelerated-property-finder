@@ -27,19 +27,20 @@ import time
 import requests
 from groq import Groq
 from dotenv import load_dotenv
+from huggingface_hub import InferenceClient
 
-import LLM1_groq as LLM1
-import LLM2_groq as LLM2
+import LLM1_hf as LLM1
+import LLM2_hf as LLM2
 import fusion
 from drug_descriptors import REQUIRED_SCHEMA, DETERMINISTIC_FIELDS
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 load_dotenv()
-GROQ_TOKEN = os.getenv("groq_token")
+GROQ_TOKEN = os.getenv("hf_token")
 if not GROQ_TOKEN:
     raise EnvironmentError("groq_token not found. Make sure it is set in your .env file.")
 
-client = Groq(api_key=GROQ_TOKEN)
+client = InferenceClient(token=GROQ_TOKEN)
 
 
 # ── Atomic masses for formula-based recomputation ────────────────────────────
