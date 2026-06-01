@@ -28,8 +28,8 @@ import requests
 from groq import Groq
 from dotenv import load_dotenv
 
-import LLM1
-import LLM2
+import LLM1_groq as LLM1
+import LLM2_groq as LLM2
 import fusion
 from drug_descriptors import REQUIRED_SCHEMA, DETERMINISTIC_FIELDS
 

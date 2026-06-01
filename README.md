@@ -71,7 +71,7 @@ The result is a production-grade JSON record where every numeric value is tracea
 ┌──────────────────────────────────────────────────────────┐
 │  LAYER 1 — Extraction  (LLM1.py)                         │
 │                                                          │
-│  Model  : meta-llama/Llama-3.1-70B-Instruct              │
+│  Model  : llama-3.3-70b-versatile (Groq)                 │
 │  Role   : Biomedical extraction agent                    │
 │  Output : Nested dict of candidate arrays                │
 │           Each leaf → list of                            │
@@ -113,7 +113,7 @@ The result is a production-grade JSON record where every numeric value is tracea
 ┌──────────────────────────────────────────────────────────┐
 │  LAYER 3 — Verification  (LLM2.py)                       │
 │                                                          │
-│  Model  : meta-llama/Llama-3.1-70B-Instruct              │
+│  Model  : llama-3.3-70b-versatile (Groq)                 │
 │  Role   : Biomedical verification agent & JSON builder   │
 │  Checks : Biological plausibility, cross-field           │
 │           consistency, composition fraction sums,        │
@@ -165,7 +165,7 @@ The result is a production-grade JSON record where every numeric value is tracea
 ├── LLM2.py               # Layer 3 — biological plausibility verification
 ├── drug_descriptors.py   # Schema, field types, source priority, deterministic field sets
 ├── output.json           # Sample output from a completed pipeline run (git-ignored)
-├── .env                  # NOT committed — holds HF_TOKEN (listed in .gitignore)
+├── .env                  # NOT committed — holds groq_token (listed in .gitignore)
 └── .gitignore            # Excludes .env, output.json, and __pycache__/
 ```
 
@@ -396,7 +396,7 @@ LLM1 may also return composition as a legacy string (`"C: 0.600, H: 0.045, O: 0.
 
 The pipeline orchestrator. Responsibilities:
 
-- Loads `HF_TOKEN` from `.env` via `python-dotenv` and initialises the `InferenceClient`.
+- Loads `groq_token` from `.env` via `python-dotenv` and initialises the `Groq` client.
 - **CID resolution**: If the input is already a digit string, it is cast to `int` directly. Otherwise, `fetch_cid()` queries the PubChem REST API by compound name (`/compound/name/.../cids/JSON`). Returns `0` on failure. Unlike previous versions, there is no SMILES fallback — the pipeline expects a name or raw CID.
 - **Name enrichment**: `fetch_name_from_cid()` fetches both the IUPAC name and first synonym for the resolved CID, constructing an enriched label passed to LLM1 (e.g. `"Ibuprofen (IUPAC: 2-[4-(2-methylpropyl)phenyl]propanoic acid)"`) to anchor extraction.
 - **Schema-driven numeric path discovery**: `_get_numeric_paths()` walks `REQUIRED_SCHEMA` recursively at runtime and returns every path to a numeric leaf (excluding `cid`). The guard layer automatically adapts when new numeric fields are added to the schema — no manual path lists to maintain.
@@ -422,7 +422,7 @@ The pipeline orchestrator. Responsibilities:
 
 The extraction layer. Key behaviours:
 
-- Uses `meta-llama/Llama-3.1-70B-Instruct` via the Hugging Face Inference API with `max_tokens=2000` and a starting `temperature=0.5`.
+- Uses `llama-3.3-70b-versatile` via the Groq API with `max_tokens=2000` and a starting `temperature=0.5`.
 - The system prompt enforces a strict **non-resolution contract**: the model must output multiple conflicting candidates per field, never pick a winner or average values itself.
 - Source type vocabulary is aligned with `SOURCE_PRIORITY` in `drug_descriptors.py`: `pubchem`, `chembl`, `drugbank`, `bindingdb`, `literature`, `other`.
 - Integer fields are explicitly listed in the prompt; the model must not produce float values for `number_of_heavy_atoms`, `net_formal_charge`, `num_h_acceptors_lipinski`, `num_h_donors_lipinski`, `num_rotatable_bonds`, `num_h_acceptors`, `num_h_donors`.
@@ -430,7 +430,7 @@ The extraction layer. Key behaviours:
 - `cas_number` guidance: the primary CAS is the canonical CAS for the free-acid/free-base neutral form — the lowest-numbered (earliest-registered) accession. Salt, hydrate, and polymorph CAS numbers must be listed as lower-confidence candidates.
 - `secondary_accession_numbers` must not repeat the value in `drugbank_id`.
 - Confidence guidance: deterministic descriptors from PubChem/DrugBank → 0.85–0.95; same from ChEMBL → 0.75–0.85; literature → 0.60–0.75; uncertain/estimated → 0.40–0.60. Confidence < 0.4 signals do not fabricate.
-- Retry loop: up to 3 attempts on `HfHubHTTPError` (timeout / server error) with a 10-second wait. On `json.JSONDecodeError` or `ValueError`, temperature is nudged upward by `+0.1` per retry (capped at 1.0) to encourage more varied JSON formatting.
+- Retry loop: up to 3 attempts on `groq.InternalServerError` (timeout / server error) with a 10-second wait. On `json.JSONDecodeError` or `ValueError`, temperature is nudged upward by `+0.1` per retry (capped at 1.0) to encourage more varied JSON formatting.
 - `clean_json_output()`: Extracts JSON from the last ` ```json ``` ` code block. Falls back to the outermost `{...}` with a regex if no code fence is present.
 
 ### `fusion.py`
@@ -505,7 +505,7 @@ Keys must exactly match leaf field names defined in `drug_descriptors.py`. This 
 
 The verification and JSON-building layer. Key behaviours:
 
-- Uses `meta-llama/Llama-3.1-70B-Instruct` with `max_tokens=2000` and `temperature=0.1` for deterministic, conservative output.
+- Uses `llama-3.3-70b-versatile` via the Groq API with `max_tokens=2000` and `temperature=0.1` for deterministic, conservative output.
 - System prompt rules:
   - **Preserve numerics**: every numeric field in fused data that is not the schema default must be copied exactly — no rounding, zeroing, or silent modification.
   - **Fill missing**: if a numeric field IS the schema default (0.0 / 0), LLM2 may fill it from its knowledge if confident; otherwise leave as default.
@@ -518,7 +518,7 @@ The verification and JSON-building layer. Key behaviours:
   - **Cross-checks**: (a) `number_of_heavy_atoms` — recount from `molecular_formula`; correct and warn if wrong. (b) `molecular_composition` — verify element fractions sum to 1.0 ± 0.005; recompute from formula if needed. (c) `exact_mol_weight` — must differ from `molecular_weight`; if identical, set to `null` and warn.
   - **Provenance**: adds a top-level `provenance` list documenting the origin of key fields (at minimum: `molecular_weight`, `molecular_formula`, `cas_number`, `smiles`), using source tags `pubchem`, `chembl`, `drugbank`, `llm_extracted`, `computed`, `verified`.
 - `_clean_json_output()`: mirrors LLM1's extractor — last ` ```json ``` ` block or outermost `{...}`.
-- Retry loop: up to 3 attempts. Both `HfHubHTTPError` and malformed JSON retries wait 10 seconds. After exhausting all retries, raises `RuntimeError`.
+- Retry loop: up to 3 attempts. Both `groq.InternalServerError` and malformed JSON retries wait 10 seconds. After exhausting all retries, raises `RuntimeError`.
 
 ### `drug_descriptors.py`
 
@@ -686,7 +686,7 @@ Fields set to `null` in the output indicate that fusion was unable to resolve a 
 ### Prerequisites
 
 - Python 3.10 or higher
-- An active Hugging Face account with a User Access Token (Read permission is sufficient)
+- A Groq account with an API key (free tier available at console.groq.com)
 
 ### Installation
 
@@ -696,7 +696,7 @@ git clone https://github.com/your-username/biomedical-property-pipeline.git
 cd biomedical-property-pipeline
 
 # 2. Install dependencies
-pip install huggingface_hub python-dotenv requests
+pip install groq python-dotenv requests
 
 # 3. Create the environment file
 touch .env
@@ -704,10 +704,10 @@ touch .env
 
 ### Environment Variables
 
-Add your Hugging Face token to `.env`:
+Add your Groq API key to `.env`:
 
 ```env
-HF_TOKEN=hf_your_actual_token_string_goes_here
+groq_token=your_actual_groq_api_key_goes_here
 ```
 
 The `.gitignore` is already configured to exclude `.env`, `output.json`, and `__pycache__/` from version control.
@@ -775,8 +775,8 @@ The `[GUARD]`, `[WARN]`, `[INFO]`, `[INT-GUARD]`, `[RECOMPUTE]`, `[CHEM-CHECK]`,
 
 | Package | Purpose |
 |---|---|
-| `huggingface_hub` | Inference API client; `InferenceClient.chat_completion()` for both LLM calls; `HfHubHTTPError` for retry handling |
-| `python-dotenv` | Loads `HF_TOKEN` from `.env` without it being hardcoded |
+| `groq` | Groq API client; `Groq.chat.completions.create()` for both LLM calls; `groq.InternalServerError` for retry handling |
+| `python-dotenv` | Loads `groq_token` from `.env` without it being hardcoded |
 | `requests` | PubChem REST API calls for CID resolution and name enrichment |
 | `statistics` | `statistics.median()` used in the fusion engine for outlier filtering |
 | `collections` | `defaultdict` used in fusion for bucketing and composition element accumulation |
@@ -785,7 +785,7 @@ The `[GUARD]`, `[WARN]`, `[INFO]`, `[INT-GUARD]`, `[RECOMPUTE]`, `[CHEM-CHECK]`,
 Install all third-party dependencies with:
 
 ```bash
-pip install huggingface_hub python-dotenv requests
+pip install groq python-dotenv requests
 ```
 
 ---
@@ -793,7 +793,7 @@ pip install huggingface_hub python-dotenv requests
 ## Design Decisions & Tradeoffs
 
 **Why the 70B model instead of the 8B?**
-The pipeline uses `meta-llama/Llama-3.1-70B-Instruct` for both LLM1 and LLM2. The 70B model produces substantially more reliable structured JSON, fewer unit errors, and fewer outright hallucinations on chemical property extraction tasks. The schema is intentionally compact (no interaction profile, no pharmacological activity fields) partly to stay within Hugging Face inference tier token budgets even at this model size.
+The pipeline uses `llama-3.3-70b-versatile` via Groq for both LLM1 and LLM2. The 70B model produces substantially more reliable structured JSON, fewer unit errors, and fewer outright hallucinations on chemical property extraction tasks. The schema is intentionally compact (no interaction profile, no pharmacological activity fields) partly to stay within Groq free-tier token budgets even at this model size.
 
 **Why type-aware fusion instead of a single weighted average?**
 A confidence-weighted mean applied to an integer field like `num_rotatable_bonds` would produce `3.2857` — a value that does not correspond to any physical reality. Integer fields use weighted mode instead: the most-agreed-upon integer value wins. This preserves the discrete nature of counts and avoids rounding errors propagating through downstream calculations.
@@ -863,11 +863,11 @@ That is the entirety of the change needed. `main.py`, `LLM1.py`, `LLM2.py`, and 
 
 ## Known Limitations
 
-- **Model hallucination**: Even `meta-llama/Llama-3.1-70B-Instruct` will fabricate plausible-sounding but incorrect values for obscure molecules with limited literature presence, or for fields like `drugbank_id` and `unii` that require exact registry knowledge. The confidence gating, plausibility windows, and deterministic recomputation mitigate but cannot eliminate this.
+- **Model hallucination**: Even `llama-3.3-70b-versatile` will fabricate plausible-sounding but incorrect values for obscure molecules with limited literature presence, or for fields like `drugbank_id` and `unii` that require exact registry knowledge. The confidence gating, plausibility windows, and deterministic recomputation mitigate but cannot eliminate this.
 - **LLM1 integer compliance**: Despite explicit prompt instructions and worked examples, the model occasionally emits float values for integer fields (e.g. `3.2857` for `num_rotatable_bonds`). The `[INT-GUARD]` pass in `main.py` acts as a last-resort catch for this.
 - **Molecular composition accuracy**: Composition fractions are extracted by LLM1 and fused element-by-element. When `molecular_formula` is known, `main.py` recomputes composition deterministically — but if the formula is itself wrong or missing, composition may be inaccurate.
 - **SMILES validation without RDKit**: The SMILES validator in `main.py` performs a structural sanity check (legal characters, balanced brackets, known atom symbols) but cannot detect chemically invalid SMILES that pass the syntactic check. Full validation would require RDKit or a similar cheminformatics library.
 - **Single-candidate pools**: If only one candidate passes the confidence filter, the outlier removal step has no peers to compare against. The single value is accepted without filtering. This is intentional — there is no basis for rejection with n=1.
-- **Free-tier rate limits**: The Hugging Face free tier imposes request quotas. The retry logic (3 attempts, 10-second wait) handles transient 429/503 errors but sustained rate-limiting will cause the pipeline to fail after exhausting retries.
+- **Free-tier rate limits**: The Groq free tier imposes request-per-minute and token-per-day quotas. The retry logic (3 attempts, 10-second wait) handles transient rate-limit errors but sustained rate-limiting will cause the pipeline to fail after exhausting retries.
 - **PubChem CID fallback**: If the name lookup fails, `cid` is set to `0`. This is a valid sentinel value, not a PubChem record. Downstream consumers of `output.json` should treat `cid == 0` as unresolved. Unlike previous versions, there is no SMILES-based fallback lookup.
 - **`secondary_accession_numbers` string field**: This list field is not numerically fused or guard-protected beyond deduplication. LLM2 may add, remove, or reorder entries; only the deduplication guard (removing entries matching `drugbank_id`) is enforced programmatically.
