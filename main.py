@@ -162,7 +162,7 @@ def _schema_default(path: tuple, schema: dict):
 # ── Integer fields ────────────────────────────────────────────────────────────
 
 INTEGER_LEAF_FIELDS = {
-    "number_of_heavy_atoms", "net_formal_charge",
+    "number_of_atoms", "net_formal_charge",
     "num_h_acceptors_lipinski", "num_h_donors_lipinski",
     "num_rotatable_bonds", "num_h_acceptors", "num_h_donors",
 }
@@ -238,8 +238,8 @@ def _check_formula_mw_consistency(output: dict) -> None:
     Warn if the formula-derived average MW deviates more than 1 Da from the
     stored molecular_weight.  This catches formula/MW mismatches from LLM2.
     """
-    formula = _get_nested(output, "molecule", "molecular_formula")
-    mw_stored = _get_nested(output, "molecule", "molecular_weight")
+    formula = output.get("molecular_formula")
+    mw_stored = output.get("molecular_weight")
     if not formula or not mw_stored or mw_stored == 0.0:
         return
     mw_calc = _compute_molecular_weight(formula)
@@ -252,42 +252,35 @@ def _check_formula_mw_consistency(output: dict) -> None:
             f"stored MW={mw_stored:.4f} (Δ={diff:.4f} Da). "
             f"Overwriting with formula-derived value."
         )
-        _set_nested(output, ["molecule", "molecular_weight"], round(mw_calc, 4))
+        _set_nested(output, ["molecular_weight"], round(mw_calc, 4))
 
 
 def _check_smiles_heavy_atom_consistency(output: dict) -> None:
     """
-    Count heavy atoms in the SMILES string and compare to number_of_heavy_atoms.
-    Discrepancies > 0 are flagged; the SMILES-derived count is authoritative
-    when a valid SMILES is present.
+    Count heavy atoms in the SMILES string and compare to number_of_atoms.
+    If they disagree, the molecular_formula-derived count is authoritative —
+    the SMILES is LLM-generated and can silently drop atoms.  On mismatch,
+    clear the SMILES rather than trust it over the formula.
     """
-    smiles = _get_nested(output, "identity", "smiles")
-    hac_stored = _get_nested(output, "molecule", "number_of_heavy_atoms")
+    smiles = output.get("smiles")
+    hac_stored = output.get("number_of_atoms")
 
     if not smiles or not hac_stored:
         return
 
-    # Count non-H atoms in SMILES by tokenising
     TWO_LETTER = {'Cl', 'Br', 'Si', 'Se', 'As', 'Te', 'Na', 'Ca', 'Mg',
                   'Fe', 'Zn', 'Cu', 'Co', 'Al', 'Li', 'Sn', 'Au', 'Ag', 'Pt'}
     two_pat = '|'.join(TWO_LETTER)
     tokens = re.findall(rf'(?:{two_pat})|[A-Za-z]', smiles)
-    heavy_in_smiles = sum(
-        1 for t in tokens
-        if t.upper() != 'H' and t not in ('c', 'n', 'o', 's', 'p', 'b')
-        or t in ('c', 'n', 'o', 's', 'p', 'b')  # aromatic atoms are heavy
-    )
-    # Simpler and more reliable: just count non-H uppercase + aromatic tokens
-    heavy_in_smiles = sum(
-        1 for t in tokens if t.lower() != 'h'
-    )
+    heavy_in_smiles = sum(1 for t in tokens if t.lower() != 'h')
 
     if heavy_in_smiles and heavy_in_smiles != int(hac_stored):
         print(
-            f"[CHEM-CHECK] SMILES↔HAC mismatch: SMILES implies {heavy_in_smiles} heavy atoms, "
-            f"stored number_of_heavy_atoms={hac_stored}. Overwriting with SMILES-derived count."
+            f"[CHEM-CHECK] SMILES vs HAC mismatch: SMILES implies {heavy_in_smiles} heavy atoms "
+            f"but formula-derived number_of_atoms={hac_stored}. "
+            f"SMILES is unverified -- clearing it and keeping formula-derived count."
         )
-        _set_nested(output, ["molecule", "number_of_heavy_atoms"], heavy_in_smiles)
+        _set_nested(output, ["smiles"], "")
 
 
 def _validate_composition_dict(output: dict) -> None:
@@ -296,14 +289,14 @@ def _validate_composition_dict(output: dict) -> None:
     fractions sum to 1.0 ± 0.01.  If the sum is off, renormalise in place.
     If the field is a string (legacy), clear it so LLM2 can recompute.
     """
-    comp = _get_nested(output, "molecule", "molecular_composition")
+    comp = output.get("molecular_composition")
 
     if comp is None:
         return
 
     if isinstance(comp, str):
         print("[COMP] molecular_composition is a string (legacy format) — clearing for recomputation.")
-        _set_nested(output, ["molecule", "molecular_composition"], {})
+        output["molecular_composition"] = {}
         return
 
     if not isinstance(comp, dict) or not comp:
@@ -313,14 +306,14 @@ def _validate_composition_dict(output: dict) -> None:
     non_numeric = {k: v for k, v in comp.items() if not isinstance(v, (int, float))}
     if non_numeric:
         print(f"[COMP] Non-numeric fractions found: {non_numeric} — clearing composition.")
-        _set_nested(output, ["molecule", "molecular_composition"], {})
+        output["molecular_composition"] = {}
         return
 
     total = sum(comp.values())
     if abs(total - 1.0) > 0.01:
         print(f"[COMP] Fractions sum to {total:.6f} (expected 1.0) — renormalising.")
         renorm = {k: round(v / total, 6) for k, v in comp.items()}
-        _set_nested(output, ["molecule", "molecular_composition"], renorm)
+        output["molecular_composition"] = renorm
 
 
 # ── Deterministic recomputation ───────────────────────────────────────────────
@@ -330,14 +323,14 @@ def _recompute_deterministic_from_formula(output: dict) -> None:
     When molecular_formula is known, recompute:
       - molecular_weight  (average)
       - exact_mol_weight  (monoisotopic)
-      - number_of_heavy_atoms
+      - number_of_atoms
       - molecular_composition  (mass fractions)
 
     These are structural/deterministic — the formula is authoritative.
     Only overrides default (0 / 0.0 / {}) values or values that differ
     significantly from the formula-derived result.
     """
-    formula = _get_nested(output, "molecule", "molecular_formula")
+    formula = output.get("molecular_formula")
     if not formula:
         return
 
@@ -364,27 +357,27 @@ def _recompute_deterministic_from_formula(output: dict) -> None:
         return False
 
     if mw_calc is not None:
-        stored_mw = _get_nested(output, "molecule", "molecular_weight") or 0.0
+        stored_mw = output.get("molecular_weight") or 0.0
         if _should_override(stored_mw, mw_calc):
-            _set_nested(output, ["molecule", "molecular_weight"], round(mw_calc, 4))
+            _set_nested(output, ["molecular_weight"], round(mw_calc, 4))
             print(f"[RECOMPUTE] molecular_weight → {round(mw_calc, 4)}")
 
     if exact_calc is not None:
-        stored_ex = _get_nested(output, "molecule", "exact_mol_weight") or 0.0
+        stored_ex = output.get("exact_mol_weight") or 0.0
         if _should_override(stored_ex, exact_calc):
-            _set_nested(output, ["molecule", "exact_mol_weight"], round(exact_calc, 6))
+            _set_nested(output, ["exact_mol_weight"], round(exact_calc, 6))
             print(f"[RECOMPUTE] exact_mol_weight → {round(exact_calc, 6)}")
 
     if hac_calc is not None:
-        stored_hac = _get_nested(output, "molecule", "number_of_heavy_atoms") or 0
+        stored_hac = output.get("number_of_atoms") or 0
         if _should_override(stored_hac, hac_calc):
-            _set_nested(output, ["molecule", "number_of_heavy_atoms"], hac_calc)
-            print(f"[RECOMPUTE] number_of_heavy_atoms → {hac_calc}")
+            _set_nested(output, ["number_of_atoms"], hac_calc)
+            print(f"[RECOMPUTE] number_of_atoms → {hac_calc}")
 
     if comp_calc:
-        stored_comp = _get_nested(output, "molecule", "molecular_composition") or {}
+        stored_comp = output.get("molecular_composition") or {}
         if _should_override(stored_comp, comp_calc):
-            _set_nested(output, ["molecule", "molecular_composition"], comp_calc)
+            _set_nested(output, ["molecular_composition"], comp_calc)
             print(f"[RECOMPUTE] molecular_composition → {comp_calc}")
 
 
@@ -511,7 +504,7 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
     if not isinstance(raw_output, dict):
         raise RuntimeError(f"LLM2 returned unexpected type {type(raw_output)}: {raw_output}")
 
-    # Surface LLM2 warnings and provenance metadata
+    # Surface LLM2 warnings; pop provenance so it never reaches final output
     llm2_warnings = raw_output.pop("warnings", [])
     if llm2_warnings:
         for w in (llm2_warnings if isinstance(llm2_warnings, list) else [llm2_warnings]):
@@ -571,20 +564,20 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
             _set_nested(final_output, list(path) + [leaf], fused_val)
 
     # ── Guard: molecular_composition must be a dict ───────────────────────────
-    comp = _get_nested(final_output, "molecule", "molecular_composition")
-    fused_comp = _get_nested(fused, "molecule", "molecular_composition")
+    comp = final_output.get("molecular_composition")
+    fused_comp = fused.get("molecular_composition")
     if isinstance(fused_comp, dict) and fused_comp:
         if not isinstance(comp, dict) or not comp:
             print("[GUARD] LLM2 lost molecular_composition dict — restoring fused value.")
-            _set_nested(final_output, ["molecule", "molecular_composition"], fused_comp)
+            _set_nested(final_output, ["molecular_composition"], fused_comp)
 
     # ── SMILES validation ─────────────────────────────────────────────────────
     # Run on fused SMILES first; if valid, prefer it over LLM2's (guard already
     # restored it above).  Then validate whatever is in final_output.
-    smiles_val = _get_nested(final_output, "identity", "smiles")
+    smiles_val = final_output.get("smiles")
     if smiles_val and not _validate_smiles(smiles_val):
         print(f"[SMILES] Validation failed for '{smiles_val}' — clearing.")
-        _set_nested(final_output, ["identity", "smiles"], "")
+        _set_nested(final_output, ["smiles"], "")
 
     # ── Deterministic recomputation from molecular_formula ────────────────────
     _recompute_deterministic_from_formula(final_output)
@@ -598,14 +591,14 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
     final_output = _enforce_integer_types(final_output)
 
     # ── Duplicate secondary-accession guard ───────────────────────────────────
-    primary_db = (_get_nested(final_output, "identity", "drugbank_id") or "").strip().upper()
-    secondary = _get_nested(final_output, "identity", "secondary_accession_numbers") or []
+    primary_db = (final_output.get("drugbank_id") or "").strip().upper()
+    secondary = final_output.get("secondary_accession_numbers") or []
     if primary_db and isinstance(secondary, list):
         cleaned = [s for s in secondary if s.strip().upper() != primary_db]
         if len(cleaned) != len(secondary):
             removed = [s for s in secondary if s.strip().upper() == primary_db]
             print(f"[GUARD] Removed duplicate drugbank accession(s) from secondary list: {removed}")
-            _set_nested(final_output, ["identity", "secondary_accession_numbers"], cleaned)
+            _set_nested(final_output, ["secondary_accession_numbers"], cleaned)
 
     # ── Mark unresolved numeric fields as null ────────────────────────────────
     for *path, leaf in numeric_paths:
@@ -630,10 +623,9 @@ def run_pipeline(molecule_input: str, debug: bool = False) -> dict:
     # ── Inject CID ────────────────────────────────────────────────────────────
     final_output["cid"] = cid
 
-    # ── Attach provenance metadata ────────────────────────────────────────────
+    # ── Log provenance metadata (not included in final output) ───────────────
     if provenance:
-        final_output["provenance"] = provenance
-        print(f"[PROV] Provenance metadata attached ({len(provenance)} entries).")
+        print(f"[PROV] Provenance metadata captured ({len(provenance)} entries) — excluded from output.")
 
     print("[LLM2] Verification complete.")
     return final_output

@@ -15,7 +15,7 @@ ABSOLUTE_THRESHOLD = {
 
 # Values strictly below the floor are implausible and discarded.
 PLAUSIBILITY_FLOOR = {
-    "number_of_heavy_atoms":    1,
+    "number_of_atoms":          1,
     "num_rotatable_bonds":      0,
     "molecular_weight":         10.0,
     "exact_mol_weight":         10.0,
@@ -33,7 +33,7 @@ PLAUSIBILITY_CEILING = {
     "num_rotatable_bonds":          50,
     "molecular_polar_surface_area": 500.0,
     "alogp":                        10.0,
-    "number_of_heavy_atoms":        500,
+    "number_of_atoms":              500,
 }
 
 # Per-field confidence caps applied AFTER source-priority boosting.
@@ -45,7 +45,7 @@ CONFIDENCE_CAP = {
     "molecular_weight":             0.80,
     "exact_mol_weight":             0.85,
     "molecular_polar_surface_area": 0.75,
-    "number_of_heavy_atoms":        0.80,
+    "number_of_atoms":          0.80,
     "num_h_acceptors_lipinski":     0.80,
     "num_h_donors_lipinski":        0.80,
     "num_h_acceptors":              0.80,

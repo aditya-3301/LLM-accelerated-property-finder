@@ -64,70 +64,35 @@ def run_extraction(
     schema_str = "\n".join(_schema_hint(schema))
 
     system_prompt = (
-        "You are a biomedical extraction agent. Extract candidate property values "
-        "for the given molecule from PubChem, ChEMBL, BindingDB, DrugBank, and "
-        "peer-reviewed literature.\n\n"
+        "You are a biomedical extraction agent. Extract molecule property candidates "
+        "from PubChem, ChEMBL, BindingDB, DrugBank, and peer-reviewed literature.\n\n"
 
-        "OUTPUT FORMAT\n"
-        "Return a single JSON object mirroring the schema's nested structure exactly. "
-        "Every leaf field must be a LIST of candidate dicts:\n"
-        '  [{"value": <value>, "confidence": <0.0–1.0>, '
-        '"source_type": "pubchem|chembl|drugbank|bindingdb|literature|other"}]\n'
-        "Multiple candidates per field are strongly encouraged when sources may differ.\n\n"
-
-        "SOURCE TYPE VOCABULARY — use exactly one of these strings:\n"
-        "  pubchem, chembl, drugbank, bindingdb, literature, other\n\n"
+        "OUTPUT: Single JSON object matching schema structure exactly. "
+        "Every leaf = LIST of candidate dicts: "
+        '[{"value":<v>,"confidence":<0.0-1.0>,"source_type":"pubchem|chembl|drugbank|bindingdb|literature|other"}]. '
+        "Prefer multiple candidates per field when sources may differ.\n\n"
 
         "RULES\n"
-        "1. STRUCTURE: mirror the schema nesting exactly. Do not flatten nested fields.\n\n"
-
-        "2. CAS NUMBER (critical):\n"
-        "   The primary CAS number is the CANONICAL CAS assigned to the free-acid/free-base "
-        "neutral form of the molecule — NOT a salt, hydrate, or polymorph. "
-        "It is the LOWEST-NUMBERED (earliest-registered) CAS accession for the parent structure.\n"
-        "   Example — ibuprofen: canonical CAS is 15687-27-1, NOT 58560-75-1 (a racemate salt).\n"
-        "   If multiple CAS numbers are known, place the canonical one first with highest confidence; "
-        "list others as lower-confidence candidates so the fusion layer can select correctly.\n\n"
-
-        "3. IDENTITY FIELDS: for drugbank_id, secondary_accession_numbers, cas_number, unii, "
-        "common_name, synonyms — use known registry information.\n"
-        "   IMPORTANT: do NOT repeat the primary drugbank_id value in secondary_accession_numbers.\n\n"
-
-        "4. SMILES: only provide if you are certain of the exact canonical structure. "
-        "A wrong SMILES is worse than an empty string.\n\n"
-
-        "5. INTEGER FIELDS — the following MUST have integer values (no decimals):\n"
-        "   number_of_heavy_atoms, net_formal_charge, num_h_acceptors_lipinski,\n"
-        "   num_h_donors_lipinski, num_rotatable_bonds, num_h_acceptors, num_h_donors.\n"
-        "   Example: num_rotatable_bonds=3, NOT 3.2857.\n\n"
-
-        "6. FLOAT FIELDS — the following MUST have float values (include a decimal):\n"
-        "   molecular_weight, exact_mol_weight, alogp, molecular_polar_surface_area.\n\n"
-
-        "7. MOLECULAR COMPOSITION — output as a dict of {element: mass_fraction}.\n"
-        "   Compute: fraction = (atom_count × atomic_mass) / molecular_weight.\n"
-        "   Atomic masses: C=12.011, H=1.008, N=14.007, O=15.999, S=32.06, P=30.974.\n"
-        "   Fractions must sum to 1.0 ± 0.005.\n"
-        "   Example for aspirin C9H8O4 MW=180.16:\n"
-        '     {"value": {"C": 0.600, "H": 0.045, "O": 0.355}, "confidence": 0.9, "source_type": "pubchem"}\n\n'
-
-        "8. HEAVY ATOMS: number_of_heavy_atoms = count of ALL non-hydrogen atoms.\n"
-        "   Sum every element except H. Example — aspirin C9H8O4: 9+4=13.\n\n"
-
-        "9. CONFIDENCE GUIDANCE:\n"
-        "   - Structural/deterministic descriptors from PubChem or DrugBank → 0.85–0.95\n"
-        "   - Same fields from ChEMBL → 0.75–0.85\n"
-        "   - Same fields from literature → 0.60–0.75\n"
-        "   - Uncertain or computed/estimated values → 0.40–0.60\n"
-        "   - Do not fabricate values — assign confidence < 0.4 if uncertain.\n\n"
-
-        "10. EXACT vs AVERAGE MW:\n"
-        "    molecular_weight   = average molecular weight (uses standard atomic weights).\n"
-        "    exact_mol_weight   = monoisotopic mass (uses most-abundant isotope masses).\n"
-        "    These MUST differ for any molecule with >1 heavy atom.\n\n"
-
-        "11. JSON: ensure all strings are properly quoted and all objects are closed.\n"
-        "    No extra keys beyond the schema.\n\n"
+        "1. Mirror schema nesting exactly. No flattening.\n"
+        "2. CAS: use canonical CAS of free-acid/free-base neutral form (lowest-numbered accession, NOT a salt/hydrate). "
+        "Ibuprofen: 15687-27-1 not 58560-75-1. List canonical first (highest confidence); others as lower-confidence candidates.\n"
+        "3. Identity fields (drugbank_id, secondary_accession_numbers, cas_number, unii, common_name, synonyms): "
+        "use registry data. Do NOT repeat drugbank_id in secondary_accession_numbers.\n"
+        "4. SMILES: before submitting, verify your SMILES heavy-atom count matches molecular_formula. "
+        "Ibuprofen C13H18O2 must have exactly 15 heavy atoms in SMILES (13C+2O). "
+        "If count mismatches the formula, output empty string instead. Wrong SMILES > no SMILES.\n"
+        "5. INTEGER fields (no decimals): number_of_atoms, net_formal_charge, "
+        "num_h_acceptors_lipinski, num_h_donors_lipinski, num_rotatable_bonds, num_h_acceptors, num_h_donors.\n"
+        "6. FLOAT fields (must have decimal): molecular_weight, exact_mol_weight, alogp, molecular_polar_surface_area.\n"
+        "7. molecular_composition: {element: mass_fraction} dict computed from molecular_formula (NOT from SMILES). "
+        "fraction=(atom_count×atomic_mass)/MW. Masses: C=12.011,H=1.008,N=14.007,O=15.999,S=32.06,P=30.974. "
+        'Sum=1.0±0.005. Ex aspirin C9H8O4 MW=180.16: {"value":{"C":0.600,"H":0.045,"O":0.355},"confidence":0.9,"source_type":"pubchem"}\n'
+        "8. number_of_atoms = count of non-H atoms ONLY from molecular_formula. Sum every element except H. "
+        "C13H18O2: C(13)+O(2)=15. H18 excluded. C9H8O4: C(9)+O(4)=13.\n"
+        "9. Confidence: PubChem/DrugBank structural→0.85-0.95; ChEMBL→0.75-0.85; literature→0.60-0.75; "
+        "estimated→0.40-0.60; uncertain→<0.4 (do not fabricate).\n"
+        "10. molecular_weight=average MW; exact_mol_weight=monoisotopic mass. Must differ for any multi-heavy-atom molecule.\n"
+        "11. Valid JSON only. No extra keys.\n\n"
 
         f"SCHEMA:\n{schema_str}\n\n"
         "Output ONLY valid JSON inside a ```json block. No explanation."

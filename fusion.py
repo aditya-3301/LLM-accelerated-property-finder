@@ -5,7 +5,7 @@ Resolves lists of LLM1 candidates into single fused values.
 
 Key design changes vs. the previous version
 -------------------------------------------
-1.  Field-type–aware fusion: integers, floats, categoricals, lists, SMILES,
+1.  Field-type-aware fusion: integers, floats, categoricals, lists, SMILES,
     and composition dicts each follow a dedicated strategy.
 2.  Integer fields are never averaged into floats.  The confidence-weighted
     mode (most-common value, ties broken by total confidence) is used, then
@@ -406,10 +406,17 @@ def fuse(extracted: dict) -> dict:
     for key, value in extracted.items():
 
         if isinstance(value, dict):
-            # Check if it's a composition candidate list encoded as a dict-valued
-            # candidate (LLM1 may return molecular_composition as a raw dict
-            # rather than a list — treat it as a single high-confidence candidate).
-            fused[key] = fuse(value)
+            # Special case: molecular_composition may arrive as a raw dict
+            # {element: fraction} rather than a candidate list. Wrap it into a
+            # single high-confidence candidate so _fuse_composition can handle it.
+            if FIELD_TYPES.get(key) == "composition":
+                fused[key] = _fuse_composition([{
+                    "value": value,
+                    "confidence": 0.85,
+                    "source_type": "other",
+                }])
+            else:
+                fused[key] = fuse(value)
 
         elif isinstance(value, list):
             ftype = FIELD_TYPES.get(key, "categorical")

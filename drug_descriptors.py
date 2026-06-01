@@ -29,7 +29,6 @@ REQUIRED_SCHEMA = {
     # Molecule — floats
     "molecular_weight":             0.0,
     "exact_mol_weight":             0.0,
-    "clean_energy":                 0.0,    # from CSV column
 
     # Molecule — integers (Lipinski / descriptor counts)
     "num_h_acceptors_lipinski":     0,      # integer
@@ -70,7 +69,6 @@ FIELD_TYPES = {
     # Molecule — floats
     "molecular_weight":             "float",
     "exact_mol_weight":             "float",
-    "clean_energy":                 "float",
     "alogp":                        "float",
     "molecular_polar_surface_area": "float",
 
