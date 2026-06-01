@@ -19,7 +19,7 @@ Changes vs previous version
 import json
 import re
 import time
-from huggingface_hub.errors import HfHubHTTPError
+from groq import InternalServerError as GroqServerError
 
 
 def clean_json_output(text: str) -> dict:
@@ -162,8 +162,8 @@ def run_extraction(
     temperature = 0.5
     for attempt in range(1, retries + 1):
         try:
-            result = client.chat_completion(
-                model="meta-llama/Llama-3.1-70B-Instruct",
+            result = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": user_content},
@@ -174,7 +174,7 @@ def run_extraction(
             raw_text = result.choices[0].message.content
             return clean_json_output(raw_text)
 
-        except HfHubHTTPError as e:
+        except GroqServerError as e:
             if attempt < retries:
                 print(f"[LLM1] Attempt {attempt} failed (server error). Retrying in {wait}s...")
                 time.sleep(wait)

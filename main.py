@@ -25,7 +25,7 @@ import os
 import re
 import time
 import requests
-from huggingface_hub import InferenceClient
+from groq import Groq
 from dotenv import load_dotenv
 
 import LLM1
@@ -35,11 +35,11 @@ from drug_descriptors import REQUIRED_SCHEMA, DETERMINISTIC_FIELDS
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 load_dotenv()
-HF_TOKEN = os.getenv("HF_TOKEN")
-if not HF_TOKEN:
-    raise EnvironmentError("HF_TOKEN not found. Make sure it is set in your .env file.")
+GROQ_TOKEN = os.getenv("groq_token")
+if not GROQ_TOKEN:
+    raise EnvironmentError("groq_token not found. Make sure it is set in your .env file.")
 
-client = InferenceClient(token=HF_TOKEN)
+client = Groq(api_key=GROQ_TOKEN)
 
 
 # ── Atomic masses for formula-based recomputation ────────────────────────────

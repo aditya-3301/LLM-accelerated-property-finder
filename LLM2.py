@@ -18,7 +18,7 @@ Changes vs previous version
 import json
 import re
 import time
-from huggingface_hub.errors import HfHubHTTPError
+from groq import InternalServerError as GroqServerError
 
 
 def _clean_json_output(text: str) -> dict:
@@ -114,8 +114,8 @@ def run_verification(
 
     for attempt in range(1, retries + 1):
         try:
-            result = client.chat_completion(
-                model="meta-llama/Llama-3.1-70B-Instruct",
+            result = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": user_content},
@@ -125,7 +125,7 @@ def run_verification(
             )
             return _clean_json_output(result.choices[0].message.content)
 
-        except HfHubHTTPError as e:
+        except GroqServerError as e:
             if attempt < retries:
                 print(f"[LLM2] Attempt {attempt} failed (server error). Retrying in {wait}s...")
                 time.sleep(wait)
