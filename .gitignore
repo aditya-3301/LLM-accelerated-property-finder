@@ -1,4 +1,3 @@
 output.json
 __pycache__/
 .env
-Drugbank_Generated.csv
