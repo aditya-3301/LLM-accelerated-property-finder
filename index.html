@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Drug Property Extraction Pipeline</title>
+<style>
+  :root {
+    --bg: #111110;
+    --bg-panel: #18181600;
+    --border-dash: rgba(222,220,209,0.18);
+    --text-primary: #d3d1c7;
+    --text-secondary: #9c9a92;
+    --text-muted: #5a5a55;
+
+    --infra-fill: #444441;
+    --infra-stroke: #b4b2a9;
+    --infra-text: #d3d1c7;
+
+    --llm-fill: #2e2a6e;
+    --llm-stroke: #aaa9ec;
+    --llm-text: #cecbf6;
+    --llm-sub: #afa9ec;
+    --llm-tag-bg: rgba(100,95,210,0.18);
+
+    --fusion-fill: #084038;
+    --fusion-stroke: #5dcaa5;
+    --fusion-text: #9fe1cb;
+    --fusion-sub: #5dcaa5;
+
+    --guard-fill: #5c2310;
+    --guard-stroke: #f09979;
+    --guard-text: #f5c4b3;
+    --guard-sub: #f09979;
+
+    --output-fill: #1e470a;
+    --output-stroke: #97c459;
+    --output-text: #c0dd97;
+
+    --pubchem-color: #4a9eff;
+    --arrow-color: #9c9a92;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    color: var(--text-primary);
+    min-height: 100vh;
+    padding: 32px 24px 48px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  h1 {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 28px;
+    text-align: center;
+  }
+
+  /* ── Outer batch runner ── */
+  .pipeline-wrap {
+    position: relative;
+    width: 100%;
+    max-width: 860px;
+  }
+
+  .batch-outline {
+    border: 1px dashed var(--border-dash);
+    border-radius: 14px;
+    padding: 36px 24px 28px;
+    position: relative;
+  }
+
+  .batch-label {
+    position: absolute;
+    top: -10px;
+    left: 18px;
+    background: var(--bg);
+    padding: 0 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+  }
+
+  /* ── Flow layout ── */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+
+  /* ── Generic node card ── */
+  .node {
+    width: 100%;
+    max-width: 460px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-style: solid;
+    padding: 13px 18px 12px;
+    position: relative;
+  }
+
+  .node-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    margin-bottom: 3px;
+  }
+
+  .node-sub {
+    font-size: 11.5px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-weight: 400;
+    opacity: 0.82;
+    line-height: 1.5;
+  }
+
+  .node-details {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .tag {
+    font-size: 10.5px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    padding: 2px 7px;
+    border-radius: 4px;
+    opacity: 0.85;
+  }
+
+  /* ── Node color themes ── */
+  .node-infra {
+    background: var(--infra-fill);
+    border-color: var(--infra-stroke);
+  }
+  .node-infra .node-title { color: var(--infra-text); }
+  .node-infra .node-sub { color: var(--text-secondary); }
+  .node-infra .tag { background: rgba(180,178,169,0.12); color: var(--infra-stroke); }
+
+  .node-llm {
+    background: var(--llm-fill);
+    border-color: var(--llm-stroke);
+  }
+  .node-llm .node-title { color: var(--llm-text); }
+  .node-llm .node-sub { color: var(--llm-sub); }
+  .node-llm .tag { background: var(--llm-tag-bg); color: var(--llm-text); }
+
+  .node-fusion {
+    background: var(--fusion-fill);
+    border-color: var(--fusion-stroke);
+  }
+  .node-fusion .node-title { color: var(--fusion-text); }
+  .node-fusion .node-sub { color: var(--fusion-sub); }
+  .node-fusion .tag { background: rgba(93,202,165,0.12); color: var(--fusion-text); }
+
+  .node-guard {
+    background: var(--guard-fill);
+    border-color: var(--guard-stroke);
+  }
+  .node-guard .node-title { color: var(--guard-text); }
+  .node-guard .node-sub { color: var(--guard-sub); }
+  .node-guard .tag { background: rgba(240,153,123,0.12); color: var(--guard-text); }
+
+  .node-output {
+    background: var(--output-fill);
+    border-color: var(--output-stroke);
+  }
+  .node-output .node-title { color: var(--output-text); }
+  .node-output .node-sub { color: var(--output-stroke); }
+
+  /* ── Arrow ── */
+  .arrow {
+    width: 2px;
+    height: 32px;
+    background: linear-gradient(to bottom, var(--arrow-color), rgba(156,154,146,0.3));
+    position: relative;
+    flex-shrink: 0;
+    align-self: center;
+  }
+  .arrow::after {
+    content: '';
+    position: absolute;
+    bottom: -6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid var(--arrow-color);
+  }
+
+  /* ── Side annotation wrapper ── */
+  .row-with-annotation {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    position: relative;
+  }
+
+  .annotation {
+    width: 195px;
+    flex-shrink: 0;
+  }
+
+  .annotation-box {
+    border-radius: 7px;
+    border: 1px solid;
+    padding: 8px 11px;
+    font-size: 11px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    line-height: 1.5;
+  }
+
+  .annotation-connector {
+    display: flex;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .annotation-dash {
+    flex: 1;
+    height: 1px;
+    border-top: 1px dashed rgba(156,154,146,0.45);
+    margin-right: 6px;
+  }
+
+  .ann-llm { border-color: rgba(170,169,236,0.3); background: rgba(46,42,110,0.35); color: var(--llm-sub); }
+  .ann-guard { border-color: rgba(240,153,123,0.3); background: rgba(92,35,16,0.35); color: var(--guard-sub); }
+  .ann-infra { border-color: rgba(180,178,169,0.25); background: rgba(68,68,65,0.3); color: var(--text-secondary); }
+
+  /* spacer when no annotation */
+  .annotation-empty { width: 195px; flex-shrink: 0; }
+
+  /* ── LLM badge ── */
+  .llm-badge {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    font-size: 10px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    background: rgba(100,95,210,0.22);
+    color: var(--llm-text);
+    border: 1px solid rgba(170,169,236,0.3);
+    border-radius: 4px;
+    padding: 2px 7px;
+    letter-spacing: 0.02em;
+  }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-top: 24px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border-dash);
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  .legend-dot {
+    width: 11px; height: 11px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  /* ── Footer note ── */
+  .footer-note {
+    margin-top: 22px;
+    font-size: 11px;
+    color: var(--text-muted);
+    text-align: center;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+
+<h1>LLM-Accelerated Drug Property Extraction Pipeline</h1>
+
+<div class="pipeline-wrap">
+  <div class="batch-outline">
+    <span class="batch-label">Generate_drugbank.py · run_pipeline()</span>
+
+    <div class="flow">
+
+      <!-- ══ NODE 1: INPUT ══ -->
+      <div class="row-with-annotation">
+        <div class="annotation-empty"></div>
+        <div class="node node-infra" style="max-width:460px;">
+          <div class="node-title">Drug name or CID input</div>
+          <div class="node-sub">Accepts common name, IUPAC name, or PubChem CID integer</div>
+        </div>
+        <div class="annotation-empty"></div>
+      </div>
+
+      <div class="arrow"></div>
+
+      <!-- ══ NODE 2: CID RESOLUTION ══ -->
+      <div class="row-with-annotation">
+        <div class="annotation">
+          <div class="annotation-box ann-infra">
+            <strong style="font-size:10.5px;">PubChem REST API</strong><br>
+            Name → <code>/compound/name/{q}/cids</code><br>
+            CID → IUPAC + synonym lookup<br>
+            <span style="opacity:0.7;">5 retries · 5s backoff</span>
+          </div>
+        </div>
+        <div class="node node-infra">
+          <div class="node-title">CID Resolution</div>
+          <div class="node-sub">Bidirectional: name → CID or CID → common name.<br>Enriches molecule label with IUPAC hint when both differ.</div>
+          <div class="node-details">
+            <span class="tag">fetch_cid()</span>
+            <span class="tag">fetch_name_from_cid()</span>
+            <span class="tag">defaults to CID 0</span>
+          </div>
+        </div>
+        <div class="annotation-empty"></div>
+      </div>
+
+      <div class="arrow"></div>
+
+      <!-- ══ NODE 3: LLM1 ══ -->
+      <div class="row-with-annotation">
+        <div class="annotation">
+          <div class="annotation-box ann-llm">
+            <strong style="font-size:10.5px;">Formula/MW pre-injection</strong><br>
+            PubChem structural data fetched first<br>
+            and injected at confidence = 1.0<br>
+            to anchor numeric descriptors
+          </div>
+        </div>
+        <div class="node node-llm">
+          <span class="llm-badge">Qwen3:32B - temp 0.5</span>
+          <div class="node-title">LLM1 — Multi-candidate extraction</div>
+          <div class="node-sub">Per-field <code>{value, confidence, source_type}</code> candidate lists.<br>
+          Min 2 candidates per numeric field from distinct sources.</div>
+          <div class="node-details">
+            <span class="tag">pubchem</span>
+            <span class="tag">chembl</span>
+            <span class="tag">drugbank</span>
+            <span class="tag">bindingdb</span>
+            <span class="tag">literature</span>
+          </div>
+        </div>
+        <div class="annotation-empty"></div>
+      </div>
+
+      <div class="arrow"></div>
+
+      <!-- ══ NODE 4: FUSION ══ -->
+      <div class="row-with-annotation">
+        <div class="annotation-empty"></div>
+        <div class="node node-fusion">
+          <div class="node-title">Fusion — Typed per-field resolution</div>
+          <div class="node-sub">Dispatches each field to a strategy based on <code>FIELD_TYPES</code>.<br>
+          Source-priority boosts PubChem/DrugBank over literature.<br>
+          Outlier removal via absolute deviation thresholds.</div>
+          <div class="node-details">
+            <span class="tag">float → weighted mean</span>
+            <span class="tag">int → weighted mode</span>
+            <span class="tag">str → eff-conf winner</span>
+            <span class="tag">list → dedup merge</span>
+            <span class="tag">smiles → best-conf</span>
+            <span class="tag">composition → per-element</span>
+          </div>
+        </div>
+        <div class="annotation">
+          <div class="annotation-box ann-infra">
+            <strong style="font-size:10.5px;">Plausibility gates</strong><br>
+            Floor + ceiling bounds per field<br>
+            Consensus hallucination detection<br>
+            <span style="opacity:0.7;">(disabled for deterministic fields)</span><br>
+            Confidence caps per field type
+          </div>
+        </div>
+      </div>
+
+      <div class="arrow"></div>
+
+      <!-- ══ NODE 5: LLM2 ══ -->
+      <div class="row-with-annotation">
+        <div class="annotation">
+          <div class="annotation-box ann-llm">
+            <strong style="font-size:10.5px;">Gap-fill rules</strong><br>
+            Copy non-default fused values exactly<br>
+            Fill only if confident — wrong ID<br>
+            is worse than empty string<br>
+            <span style="opacity:0.7;">CAS: preserved, no substitution</span>
+          </div>
+        </div>
+        <div class="node node-llm">
+          <span class="llm-badge">Local LLM · temp 0.1</span>
+          <div class="node-title">LLM2 — Gap-fill &amp; verification</div>
+          <div class="node-sub">Receives fused intermediate. Fills genuinely empty fields,<br>
+          cross-checks composition fractions and heavy-atom count.<br>
+          Emits warnings list for any corrections made.</div>
+          <div class="node-details">
+            <span class="tag">number_of_atoms cross-check</span>
+            <span class="tag">composition renormalise</span>
+            <span class="tag">exact≠average MW check</span>
+          </div>
+        </div>
+        <div class="annotation-empty"></div>
+      </div>
+
+      <div class="arrow"></div>
+
+      <!-- ══ NODE 6: POST-PROCESSING ══ -->
+      <div class="row-with-annotation">
+        <div class="annotation-empty"></div>
+        <div class="node node-guard">
+          <div class="node-title">Post-processing guards</div>
+          <div class="node-sub">Deterministic recomputation from <code>molecular_formula</code> overrides LLM noise.<br>
+          Fused numerics restored if LLM2 silently changed them.<br>
+          Integer type enforcement — no 3.2857 for rotatable bonds.</div>
+          <div class="node-details">
+            <span class="tag">formula → MW / exact MW</span>
+            <span class="tag">formula → HAC</span>
+            <span class="tag">formula → composition</span>
+            <span class="tag">SMILES atom-count check</span>
+            <span class="tag">int-type enforcement</span>
+            <span class="tag">secondary accession dedup</span>
+          </div>
+        </div>
+        <div class="annotation">
+          <div class="annotation-box ann-guard">
+            <strong style="font-size:10.5px;">SMILES fallback</strong><br>
+            Mismatch vs heavy-atom count<br>
+            → SMILES cleared, formula count<br>
+            kept as authoritative.<br>
+            Bracket balance + atom token<br>
+            validation without RDKit.
+          </div>
+        </div>
+      </div>
+
+      <div class="arrow"></div>
+
+      <!-- ══ NODE 7: OUTPUT ══ -->
+      <div class="row-with-annotation">
+        <div class="annotation-empty"></div>
+        <div class="node node-output" style="text-align:center;">
+          <div class="node-title">Final record → CSV row</div>
+          <div class="node-sub">23 fields flattened: list fields expanded to indexed columns<br>
+          (Secondary_Accession_1/2 · Synonym_1/2/3 · composition as string)</div>
+        </div>
+        <div class="annotation-empty"></div>
+      </div>
+
+    </div><!-- /.flow -->
+
+    <!-- ── Legend ── -->
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-dot" style="background:var(--llm-fill);border:1px solid var(--llm-stroke);"></div>
+        Local LLM call
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:var(--fusion-fill);border:1px solid var(--fusion-stroke);"></div>
+        Fusion logic
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:var(--guard-fill);border:1px solid var(--guard-stroke);"></div>
+        Post-processing / guards
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:var(--infra-fill);border:1px solid var(--infra-stroke);"></div>
+        Infrastructure / I/O
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:var(--output-fill);border:1px solid var(--output-stroke);"></div>
+        Output
+      </div>
+    </div>
+
+  </div><!-- /.batch-outline -->
+
+  <div class="footer-note">
+    Generate_drugbank.py · processes up to 50 CIDs · resumes from last written position<br>
+    Schema: 23 fields · REQUIRED_SCHEMA defaults encode expected types (0 / 0.0 / "" / [] / {})
+  </div>
+
+</div><!-- /.pipeline-wrap -->
+
+</body>
+</html>
