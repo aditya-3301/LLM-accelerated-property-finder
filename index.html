@@ -527,7 +527,7 @@
               </div>
             </div>
             <div class="node node-llm" data-node="llm2" onclick="openPanel('llm2')">
-              <span class="llm-badge">Local LLM · temp 0.1</span>
+              <span class="llm-badge">Qwen3:32b · temp 0.1</span>
               <div class="node-title">LLM2 — Gap-fill &amp; verification</div>
               <div class="node-sub">Receives fused intermediate. Fills genuinely empty fields, cross-checks composition fractions and heavy-atom count. Emits warnings for corrections.</div>
               <div class="node-details">
@@ -585,7 +585,7 @@
         </div><!-- /.flow -->
 
         <div class="legend">
-          <div class="legend-item"><div class="legend-dot" style="background:var(--llm-fill);border:1px solid var(--llm-stroke)"></div>Local LLM</div>
+          <div class="legend-item"><div class="legend-dot" style="background:var(--llm-fill);border:1px solid var(--llm-stroke)"></div>Qwen3:32b</div>
           <div class="legend-item"><div class="legend-dot" style="background:var(--fusion-fill);border:1px solid var(--fusion-stroke)"></div>Fusion</div>
           <div class="legend-item"><div class="legend-dot" style="background:var(--guard-fill);border:1px solid var(--guard-stroke)"></div>Guards</div>
           <div class="legend-item"><div class="legend-dot" style="background:var(--infra-fill);border:1px solid var(--infra-stroke)"></div>Infrastructure</div>
@@ -665,7 +665,7 @@ const PANELS = {
   },
 
   llm1: {
-    tag: 'LOCAL LLM', tagColor: '#cecbf6', tagBg: 'rgba(46,42,110,0.6)',
+    tag: 'Qwen3:32b', tagColor: '#cecbf6', tagBg: 'rgba(46,42,110,0.6)',
     title: 'LLM1 — Multi-candidate extraction',
     subtitle: 'The first LLM pass. Its job is breadth: collect multiple independent value candidates per field, each tagged with a confidence score and source type. It does not pick winners — Fusion does that.',
     html: `
@@ -727,34 +727,6 @@ const PANELS = {
 // a low-confidence PubChem one.</div>
       </div>
       <div class="panel-section">
-        <div class="panel-section-title">Strategy: float fields</div>
-        <p>Confidence-weighted mean after outlier removal. Outliers are candidates whose value deviates from the median by more than an absolute threshold (defined in <code>fusion_config.py</code>):</p>
-        <div class="code-block">ABSOLUTE_THRESHOLD = {
-  "molecular_weight":             50.0,
-  "exact_mol_weight":             0.005,
-  "alogp":                        0.5,
-  "molecular_polar_surface_area": 10.0,
-}</div>
-      </div>
-      <div class="panel-section">
-        <div class="panel-section-title">Strategy: integer fields</div>
-        <p>Weighted mode — the integer value with the highest summed effective confidence wins. Never produces a float like <code>3.2857</code> for <code>num_rotatable_bonds</code>. Ties broken by source priority.</p>
-        <div class="pill-list">
-          <span class="pill">number_of_atoms</span><span class="pill">net_formal_charge</span>
-          <span class="pill">num_h_acceptors_lipinski</span><span class="pill">num_h_donors_lipinski</span>
-          <span class="pill">num_rotatable_bonds</span><span class="pill">num_h_acceptors</span><span class="pill">num_h_donors</span>
-        </div>
-      </div>
-      <div class="panel-section">
-        <div class="panel-section-title">Plausibility gates (fusion_config.py)</div>
-        <p>Before any field is fused, candidates outside physical bounds are dropped:</p>
-        <div class="code-block">PLAUSIBILITY_FLOOR    = {"molecular_weight": 10.0, ...}
-PLAUSIBILITY_CEILING  = {"molecular_weight": 2000.0,
-                          "alogp": 10.0,
-                          "num_rotatable_bonds": 50, ...}
-CONFIDENCE_CAP        = {"alogp": 0.70, "molecular_weight": 0.80, ...}</div>
-      </div>
-      <div class="panel-section">
         <div class="panel-section-title">Consensus hallucination detection</div>
         <p>If all numeric candidates for a non-deterministic field share the exact same value, the model likely echoed one number rather than independently retrieving data. Effective confidence is capped at 0.5 with a warning.</p>
         <div class="ok-box">Disabled for deterministic fields like MW since identical values across PubChem/DrugBank/ChEMBL are expected, not suspicious.</div>
@@ -763,7 +735,7 @@ CONFIDENCE_CAP        = {"alogp": 0.70, "molecular_weight": 0.80, ...}</div>
   },
 
   llm2: {
-    tag: 'LOCAL LLM', tagColor: '#cecbf6', tagBg: 'rgba(46,42,110,0.6)',
+    tag: 'Qwen3:32b', tagColor: '#cecbf6', tagBg: 'rgba(46,42,110,0.6)',
     title: 'LLM2 — Gap-fill & verification',
     subtitle: 'The second LLM pass. Temperature 0.1 — near-deterministic. Its job is narrow: fill fields that are still at schema defaults, and cross-check 3 specific consistency rules. It must not alter fused values.',
     html: `
