@@ -2,7 +2,7 @@
 
 An automated three-tier pipeline that extracts, fuses, and verifies physicochemical and pharmacological descriptors for small molecules from scientific literature and public databases. Uses a **hybrid LLM → Code → LLM** architecture: broad LLM extraction, deterministic mathematical fusion, and LLM-based plausibility verification.
 
-> **Branch note:** This branch uses the [Groq](https://console.groq.com) inference API (`llama-3.3-70b-versatile`) for both LLM layers. Authentication requires a `groq_token` in `.env`.
+> **Branch note:** This branch uses the [Groq](https://console.groq.com) inference API (`llama-3.3-70b-versatile`) for both LLM layers. Authentication requires a `groq_token` in `.env`, it wont work without it.
 
 ---
 
