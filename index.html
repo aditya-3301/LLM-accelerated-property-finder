@@ -746,17 +746,6 @@ const PANELS = {
         </div>
       </div>
       <div class="panel-section">
-        <div class="panel-section-title">Strategy: categorical (strings)</div>
-        <p>Highest effective-confidence string wins. Special rule for <code>cas_number</code>: among candidates tied at max confidence, prefer the lexicographically smallest value — CAS numbers assigned earlier (lowest registry number) are canonical.</p>
-      </div>
-      <div class="panel-section">
-        <div class="panel-section-title">Strategy: molecular_composition</div>
-        <p>Fused element-by-element. Each element's fractions across all candidates are fused as floats independently, then renormalized so all fractions sum to 1.0.</p>
-        <div class="code-block">// Per-element weighted mean, then renormalize:
-total = sum(fused_comp.values())
-fused_comp = {k: round(v/total, 6) for k,v in fused_comp.items()}</div>
-      </div>
-      <div class="panel-section">
         <div class="panel-section-title">Plausibility gates (fusion_config.py)</div>
         <p>Before any field is fused, candidates outside physical bounds are dropped:</p>
         <div class="code-block">PLAUSIBILITY_FLOOR    = {"molecular_weight": 10.0, ...}
@@ -768,11 +757,7 @@ CONFIDENCE_CAP        = {"alogp": 0.70, "molecular_weight": 0.80, ...}</div>
       <div class="panel-section">
         <div class="panel-section-title">Consensus hallucination detection</div>
         <p>If all numeric candidates for a non-deterministic field share the exact same value, the model likely echoed one number rather than independently retrieving data. Effective confidence is capped at 0.5 with a warning.</p>
-        <div class="ok-box">Disabled for deterministic fields (MW, HAC, HBA…) — identical values across PubChem/DrugBank/ChEMBL are expected, not suspicious.</div>
-      </div>
-      <div class="panel-section">
-        <div class="panel-section-title">Post-fusion: dedup guard</div>
-        <p>After all fields are resolved, removes any value from <code>secondary_accession_numbers</code> that matches <code>drugbank_id</code> (case-insensitive). Runs in both fusion.py and again in main.py as a double guard.</p>
+        <div class="ok-box">Disabled for deterministic fields like MW since identical values across PubChem/DrugBank/ChEMBL are expected, not suspicious.</div>
       </div>
     `
   },
